@@ -391,7 +391,7 @@ export function adjustModelsForSubscription(
 
 // ── SDK capability probe ────────────────────────────────────────────
 
-const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
+const CAPABILITIES_PROBE_TIMEOUT_MS = 2_000;
 const CLAUDE_RATE_LIMIT_PROBE_TIMEOUT_MS = 1_000;
 
 /**

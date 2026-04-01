@@ -282,7 +282,7 @@ export const hasCustomModelProvider = readCodexConfigModelProvider().pipe(
   Effect.orElseSucceed(() => false),
 );
 
-const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
+const CAPABILITIES_PROBE_TIMEOUT_MS = 2_000;
 
 const probeCodexCapabilities = (input: {
   readonly binaryPath: string;

@@ -24,7 +24,7 @@ export interface ServerConfigUpdatedNotification {
 
 type ServerStateClient = Pick<
   WsRpcClient["server"],
-  "getConfig" | "subscribeConfig" | "subscribeLifecycle"
+  "getConfig" | "refreshProviders" | "subscribeConfig" | "subscribeLifecycle"
 >;
 
 function makeStateAtom<A>(label: string, initialValue: A) {
@@ -161,6 +161,24 @@ export function onProvidersUpdated(
 
 export function startServerStateSync(client: ServerStateClient): () => void {
   let disposed = false;
+  let providerRefreshRequested = false;
+
+  const requestProviderRefresh = () => {
+    if (disposed || providerRefreshRequested) {
+      return;
+    }
+    providerRefreshRequested = true;
+    void client
+      .refreshProviders()
+      .then((payload) => {
+        if (disposed) {
+          return;
+        }
+        applyProvidersUpdated(payload);
+      })
+      .catch(() => undefined);
+  };
+
   const cleanups = [
     client.subscribeLifecycle((event) => {
       if (event.type === "welcome") {
@@ -169,6 +187,9 @@ export function startServerStateSync(client: ServerStateClient): () => void {
     }),
     client.subscribeConfig((event) => {
       applyServerConfigEvent(event);
+      if (event.type === "snapshot") {
+        requestProviderRefresh();
+      }
     }),
   ];
 
@@ -180,8 +201,11 @@ export function startServerStateSync(client: ServerStateClient): () => void {
           return;
         }
         setServerConfigSnapshot(config);
+        requestProviderRefresh();
       })
       .catch(() => undefined);
+  } else {
+    requestProviderRefresh();
   }
 
   return () => {

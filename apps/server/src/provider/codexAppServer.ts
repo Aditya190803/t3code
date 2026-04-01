@@ -23,7 +23,7 @@ interface JsonRpcProbeResponse {
   };
 }
 
-const RATE_LIMITS_PROBE_GRACE_MS = 1_500;
+const RATE_LIMITS_PROBE_GRACE_MS = 150;
 
 function readErrorMessage(response: JsonRpcProbeResponse): string | undefined {
   return typeof response.error?.message === "string" ? response.error.message : undefined;

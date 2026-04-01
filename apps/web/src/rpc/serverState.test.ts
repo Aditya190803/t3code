@@ -62,6 +62,11 @@ const baseServerConfig: ServerConfig = {
 
 const serverApi = {
   getConfig: vi.fn<() => Promise<ServerConfig>>(),
+  refreshProviders: vi.fn<
+    () => Promise<{
+      providers: ReadonlyArray<ServerProvider>;
+    }>
+  >(),
   subscribeConfig: vi.fn((listener: (event: ServerConfigStreamEvent) => void) =>
     registerListener(configListeners, listener),
   ),
@@ -101,6 +106,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   lifecycleListeners.clear();
   configListeners.clear();
+  serverApi.refreshProviders.mockResolvedValue({ providers: defaultProviders });
   resetServerStateForTests();
 });
 
@@ -123,6 +129,7 @@ describe("serverState", () => {
     expect(serverApi.subscribeConfig).toHaveBeenCalledOnce();
     expect(serverApi.subscribeLifecycle).toHaveBeenCalledOnce();
     expect(serverApi.getConfig).toHaveBeenCalledOnce();
+    expect(serverApi.refreshProviders).toHaveBeenCalledOnce();
     expect(configListener).toHaveBeenCalledWith(
       {
         issues: [],
@@ -168,10 +175,15 @@ describe("serverState", () => {
       expect(getServerConfig()).toEqual(streamedConfig);
     });
 
+    await waitFor(() => {
+      expect(serverApi.refreshProviders).toHaveBeenCalledOnce();
+    });
+
     deferred.resolve(baseServerConfig);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(getServerConfig()).toEqual(streamedConfig);
+    expect(serverApi.refreshProviders).toHaveBeenCalledOnce();
     stop();
   });
 
@@ -274,24 +286,22 @@ describe("serverState", () => {
     });
 
     expect(providersListener).toHaveBeenLastCalledWith({ providers: nextProviders });
-    expect(configListener).toHaveBeenNthCalledWith(
-      2,
+    expect(configListener.mock.calls).toContainEqual([
       {
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
         providers: defaultProviders,
         settings: DEFAULT_SERVER_SETTINGS,
       },
       "keybindingsUpdated",
-    );
-    expect(configListener).toHaveBeenNthCalledWith(
-      3,
+    ]);
+    expect(configListener.mock.calls).toContainEqual([
       {
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
         providers: nextProviders,
         settings: DEFAULT_SERVER_SETTINGS,
       },
       "providerStatuses",
-    );
+    ]);
     expect(configListener).toHaveBeenLastCalledWith(
       {
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
@@ -306,6 +316,41 @@ describe("serverState", () => {
 
     unsubscribeProviders();
     unsubscribeConfig();
+    stop();
+  });
+
+  it("applies eager refreshProviders results without waiting for stream events", async () => {
+    const refreshedProviders: ReadonlyArray<ServerProvider> = [
+      {
+        ...defaultProviders[0]!,
+        checkedAt: "2026-01-03T00:00:00.000Z",
+        usage: {
+          updatedAt: "2026-01-03T00:00:00.000Z",
+          buckets: [
+            {
+              id: "weekly",
+              label: "Weekly usage limit",
+              usedPercent: 12,
+              remainingPercent: 88,
+              resetsAt: "2026-01-08T16:19:00.000Z",
+            },
+          ],
+        },
+      },
+    ];
+    serverApi.getConfig.mockResolvedValueOnce(baseServerConfig);
+    serverApi.refreshProviders.mockResolvedValueOnce({ providers: refreshedProviders });
+
+    const stop = startServerStateSync(serverApi);
+
+    await waitFor(() => {
+      expect(getServerConfig()).toEqual({
+        ...baseServerConfig,
+        providers: refreshedProviders,
+      });
+    });
+
+    expect(serverApi.refreshProviders).toHaveBeenCalledOnce();
     stop();
   });
 });
