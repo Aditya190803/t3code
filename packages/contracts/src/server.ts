@@ -56,6 +56,32 @@ export const ServerProviderModel = Schema.Struct({
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
 
+export const ServerProviderUsageBucketId = Schema.Literals(["fiveHour", "weekly"]);
+export type ServerProviderUsageBucketId = typeof ServerProviderUsageBucketId.Type;
+
+const PercentageSchema = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)).check(
+  Schema.isLessThanOrEqualTo(100),
+);
+
+export const ServerProviderUsageBucket = Schema.Struct({
+  id: ServerProviderUsageBucketId,
+  label: TrimmedNonEmptyString,
+  remainingPercent: PercentageSchema.annotate({
+    description: "Remaining usage percentage in the provider-defined bucket window.",
+  }),
+  usedPercent: PercentageSchema.annotate({
+    description: "Used usage percentage in the provider-defined bucket window.",
+  }),
+  resetsAt: IsoDateTime,
+});
+export type ServerProviderUsageBucket = typeof ServerProviderUsageBucket.Type;
+
+export const ServerProviderUsage = Schema.Struct({
+  buckets: Schema.Array(ServerProviderUsageBucket),
+  updatedAt: Schema.optional(IsoDateTime),
+});
+export type ServerProviderUsage = typeof ServerProviderUsage.Type;
+
 export const ServerProvider = Schema.Struct({
   provider: ProviderKind,
   enabled: Schema.Boolean,
@@ -65,6 +91,9 @@ export const ServerProvider = Schema.Struct({
   auth: ServerProviderAuth,
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
+  account: Schema.optional(Schema.Unknown),
+  rateLimits: Schema.optional(Schema.Unknown),
+  usage: Schema.optional(ServerProviderUsage),
   models: Schema.Array(ServerProviderModel),
 });
 export type ServerProvider = typeof ServerProvider.Type;
