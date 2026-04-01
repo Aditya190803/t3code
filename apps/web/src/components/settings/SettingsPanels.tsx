@@ -16,6 +16,7 @@ import {
   type ProviderKind,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerProviderUsageBucket,
   ThreadId,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
@@ -45,6 +46,11 @@ import {
   getCustomModelOptionsByProvider,
   resolveAppModelSelectionState,
 } from "../../modelSelection";
+import {
+  formatUsageRemainingPercent,
+  formatUsageResetAt,
+  getProviderUsageBuckets,
+} from "../../lib/accountQuota";
 import { ensureNativeApi, readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
@@ -63,6 +69,51 @@ import {
   useServerKeybindingsConfigPath,
   useServerProviders,
 } from "../../rpc/serverState";
+
+function ProviderUsageRows({
+  buckets,
+  timestampFormat,
+}: {
+  buckets: ReadonlyArray<ServerProviderUsageBucket>;
+  timestampFormat: "locale" | "12-hour" | "24-hour";
+}) {
+  if (buckets.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="px-4 pb-4 sm:px-5">
+      <div className="space-y-3">
+        {buckets.map((bucket) => (
+          <div key={bucket.id} className="space-y-1.5">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-medium text-foreground">{bucket.label}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {formatUsageRemainingPercent(bucket)}
+              </span>
+            </div>
+            <div
+              className="h-1.5 overflow-hidden rounded-full bg-muted"
+              role="progressbar"
+              aria-label={bucket.label}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={bucket.usedPercent}
+            >
+              <div
+                className="h-full rounded-full bg-foreground/80 transition-[width]"
+                style={{ width: `${bucket.usedPercent}%` }}
+              />
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {formatUsageResetAt(bucket.resetsAt, timestampFormat)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const THEME_OPTIONS = [
   {
@@ -1063,6 +1114,7 @@ export function GeneralSettingsPanel() {
           const customModelError = customModelErrorByProvider[providerCard.provider] ?? null;
           const providerDisplayName =
             PROVIDER_DISPLAY_NAMES[providerCard.provider] ?? providerCard.title;
+          const usageBuckets = getProviderUsageBuckets(providerCard.liveProvider);
 
           return (
             <div key={providerCard.provider} className="border-t border-border first:border-t-0">
@@ -1152,6 +1204,11 @@ export function GeneralSettingsPanel() {
                   </div>
                 </div>
               </div>
+
+              <ProviderUsageRows
+                buckets={usageBuckets}
+                timestampFormat={settings.timestampFormat}
+              />
 
               <Collapsible
                 open={openProviderDetails[providerCard.provider]}
