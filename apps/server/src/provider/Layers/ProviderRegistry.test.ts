@@ -884,6 +884,56 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
         ),
       );
 
+      it.effect(
+        "includes provider-level Claude account and weekly quota data from the SDK probe",
+        () =>
+          Effect.gen(function* () {
+            const status = yield* checkClaudeProviderStatus(() =>
+              Effect.succeed({
+                subscriptionType: "maxplan",
+                account: {
+                  email: "adi@example.com",
+                  subscriptionType: "maxplan",
+                },
+                rateLimits: {
+                  status: "allowed_warning",
+                  rateLimitType: "seven_day",
+                  utilization: 0.42,
+                  resetsAt: 1_775_463_116,
+                },
+              }),
+            );
+
+            assert.strictEqual(status.provider, "claudeAgent");
+            assert.strictEqual(status.status, "ready");
+            assert.strictEqual(status.auth.status, "authenticated");
+            assert.deepStrictEqual(status.account, {
+              email: "adi@example.com",
+              subscriptionType: "maxplan",
+            });
+            assert.deepStrictEqual(status.rateLimits, {
+              status: "allowed_warning",
+              rateLimitType: "seven_day",
+              utilization: 0.42,
+              resetsAt: 1_775_463_116,
+            });
+          }).pipe(
+            Effect.provide(
+              mockSpawnerLayer((args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+                if (joined === "auth status")
+                  return {
+                    stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                    stderr: "",
+                    code: 0,
+                  };
+                throw new Error(`Unexpected args: ${joined}`);
+              }),
+            ),
+          ),
+      );
+
       it.effect("returns an api key label for claude api key auth", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus();

@@ -3,6 +3,7 @@ import type {
   ServerProviderAuth,
   ServerProviderModel,
   ServerProviderState,
+  ServerProviderUsage,
 } from "@t3tools/contracts";
 import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -23,6 +24,8 @@ export interface ProviderProbeResult {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProviderAuth;
   readonly message?: string;
+  readonly account?: Record<string, unknown>;
+  readonly rateLimits?: Record<string, unknown> | ReadonlyArray<Record<string, unknown>>;
 }
 
 export function nonEmptyTrimmed(value: string | undefined): string | undefined {
@@ -130,6 +133,7 @@ export function buildServerProvider(input: {
   checkedAt: string;
   models: ReadonlyArray<ServerProviderModel>;
   probe: ProviderProbeResult;
+  usage?: ServerProviderUsage;
 }): ServerProvider {
   return {
     provider: input.provider,
@@ -140,6 +144,9 @@ export function buildServerProvider(input: {
     auth: input.probe.auth,
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
+    ...(input.probe.account ? { account: input.probe.account } : {}),
+    ...(input.probe.rateLimits ? { rateLimits: input.probe.rateLimits } : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
     models: input.models,
   };
 }

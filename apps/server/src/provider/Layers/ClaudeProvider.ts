@@ -22,12 +22,21 @@ import {
   spawnAndCollect,
   type CommandResult,
 } from "../providerSnapshot";
+import { normalizeProviderUsageFromRateLimits } from "../providerUsage";
 import { makeManagedServerProvider } from "../makeManagedServerProvider";
 import { ClaudeProvider } from "../Services/ClaudeProvider";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSettingsError } from "@t3tools/contracts";
 
 const PROVIDER = "claudeAgent" as const;
+interface ClaudeProbeState {
+  readonly subscriptionType: string | undefined;
+  readonly account: Record<string, unknown> | null;
+  readonly rateLimits: ReadonlyArray<Record<string, unknown>> | Record<string, unknown> | null;
+}
+
+type MaybeClaudeProbeState = ClaudeProbeState | string | undefined;
+
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-6",
@@ -383,6 +392,7 @@ export function adjustModelsForSubscription(
 // ── SDK capability probe ────────────────────────────────────────────
 
 const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
+const CLAUDE_RATE_LIMIT_PROBE_TIMEOUT_MS = 1_000;
 
 /**
  * Probe account information by spawning a lightweight Claude Agent SDK
@@ -395,6 +405,20 @@ const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.
  */
+function toClaudeProbeState(value: MaybeClaudeProbeState): ClaudeProbeState | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return {
+      subscriptionType: value,
+      account: null,
+      rateLimits: null,
+    };
+  }
+  return value;
+}
+
 const probeClaudeCapabilities = (binaryPath: string) => {
   const abort = new AbortController();
   return Effect.tryPromise(async () => {
@@ -410,8 +434,60 @@ const probeClaudeCapabilities = (binaryPath: string) => {
         stderr: () => {},
       },
     });
+    const rateLimitInfos: Array<Record<string, unknown>> = [];
+    const rateLimitsPromise = new Promise<ReadonlyArray<Record<string, unknown>> | null>(
+      (resolve) => {
+        let settled = false;
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const settle = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (debounceTimer) {
+            clearTimeout(debounceTimer);
+          }
+          resolve(rateLimitInfos.length > 0 ? rateLimitInfos : null);
+        };
+
+        const scheduleSettle = () => {
+          if (debounceTimer) {
+            clearTimeout(debounceTimer);
+          }
+          debounceTimer = setTimeout(settle, CLAUDE_RATE_LIMIT_PROBE_TIMEOUT_MS);
+        };
+
+        void (async () => {
+          try {
+            for await (const message of q) {
+              if (message.type !== "rate_limit_event" || !message.rate_limit_info) {
+                continue;
+              }
+
+              rateLimitInfos.push({ ...message.rate_limit_info } as Record<string, unknown>);
+              scheduleSettle();
+            }
+          } catch {
+            settle();
+          }
+
+          settle();
+        })();
+      },
+    );
     const init = await q.initializationResult();
-    return { subscriptionType: init.account?.subscriptionType };
+    const rateLimits = await Promise.race([
+      rateLimitsPromise,
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), CLAUDE_RATE_LIMIT_PROBE_TIMEOUT_MS),
+      ),
+    ]);
+    return {
+      subscriptionType: init.account?.subscriptionType,
+      account: init.account ? ({ ...init.account } as Record<string, unknown>) : null,
+      rateLimits,
+    } satisfies ClaudeProbeState;
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
@@ -439,7 +515,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (args: Readonly
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
-  resolveSubscriptionType?: (binaryPath: string) => Effect.Effect<string | undefined>,
+  resolveSubscriptionType?: (binaryPath: string) => Effect.Effect<MaybeClaudeProbeState>,
 ): Effect.fn.Return<
   ServerProvider,
   ServerSettingsError,
@@ -545,17 +621,26 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   let subscriptionType: string | undefined;
   let authMethod: string | undefined;
+  let probeState: ClaudeProbeState | undefined;
 
   if (Result.isSuccess(authProbe) && Option.isSome(authProbe.success)) {
     subscriptionType = extractSubscriptionTypeFromOutput(authProbe.success.value);
     authMethod = extractClaudeAuthMethodFromOutput(authProbe.success.value);
   }
 
-  if (!subscriptionType && resolveSubscriptionType) {
-    subscriptionType = yield* resolveSubscriptionType(claudeSettings.binaryPath);
+  if (resolveSubscriptionType) {
+    probeState = toClaudeProbeState(yield* resolveSubscriptionType(claudeSettings.binaryPath));
+    if (!subscriptionType) {
+      subscriptionType = probeState?.subscriptionType;
+    }
   }
 
   const resolvedModels = adjustModelsForSubscription(models, subscriptionType);
+  const usage = normalizeProviderUsageFromRateLimits({
+    provider: PROVIDER,
+    rateLimits: probeState?.rateLimits,
+    updatedAt: checkedAt,
+  });
 
   // ── Handle auth results (same logic as before, adjusted models) ──
 
@@ -566,11 +651,14 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models: resolvedModels,
+      ...(usage ? { usage } : {}),
       probe: {
         installed: true,
         version: parsedVersion,
         status: "warning",
         auth: { status: "unknown" },
+        ...(probeState?.account ? { account: probeState.account } : {}),
+        ...(probeState?.rateLimits ? { rateLimits: probeState.rateLimits } : {}),
         message:
           error instanceof Error
             ? `Could not verify Claude authentication status: ${error.message}.`
@@ -585,11 +673,14 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models: resolvedModels,
+      ...(usage ? { usage } : {}),
       probe: {
         installed: true,
         version: parsedVersion,
         status: "warning",
         auth: { status: "unknown" },
+        ...(probeState?.account ? { account: probeState.account } : {}),
+        ...(probeState?.rateLimits ? { rateLimits: probeState.rateLimits } : {}),
         message: "Could not verify Claude authentication status. Timed out while running command.",
       },
     });
@@ -602,6 +693,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     enabled: claudeSettings.enabled,
     checkedAt,
     models: resolvedModels,
+    ...(usage ? { usage } : {}),
     probe: {
       installed: true,
       version: parsedVersion,
@@ -610,6 +702,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...parsed.auth,
         ...(authMetadata ? authMetadata : {}),
       },
+      ...(probeState?.account ? { account: probeState.account } : {}),
+      ...(probeState?.rateLimits ? { rateLimits: probeState.rateLimits } : {}),
       ...(parsed.message ? { message: parsed.message } : {}),
     },
   });
@@ -624,8 +718,7 @@ export const ClaudeProviderLive = Layer.effect(
     const subscriptionProbeCache = yield* Cache.make({
       capacity: 1,
       timeToLive: Duration.minutes(5),
-      lookup: (binaryPath: string) =>
-        probeClaudeCapabilities(binaryPath).pipe(Effect.map((r) => r?.subscriptionType)),
+      lookup: (binaryPath: string) => probeClaudeCapabilities(binaryPath),
     });
 
     const checkProvider = checkClaudeProviderStatus((binaryPath) =>

@@ -2138,6 +2138,76 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("projects account metadata updates into normalized thread activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "account.updated",
+      eventId: asEventId("evt-account-updated"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        account: {
+          type: "chatgpt",
+          planType: "pro",
+          sparkEnabled: true,
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "account.updated",
+      ),
+    );
+
+    const accountActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "account.updated",
+    );
+    expect(accountActivity?.payload).toMatchObject({
+      type: "chatgpt",
+      planType: "pro",
+      sparkEnabled: true,
+    });
+  });
+
+  it("projects account rate-limit updates into normalized thread activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-account-rate-limits-updated"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        rateLimits: {
+          tokensPerMinute: 600000,
+          requestsPerMinute: 60,
+          remainingTokens: 512000,
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "account.rate-limits.updated",
+      ),
+    );
+
+    const rateLimitsActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "account.rate-limits.updated",
+    );
+    expect(rateLimitsActivity?.payload).toMatchObject({
+      tokensPerMinute: 600000,
+      requestsPerMinute: 60,
+      remainingTokens: 512000,
+    });
+  });
+
   it("projects compacted thread state into context compaction activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

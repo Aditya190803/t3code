@@ -1,14 +1,29 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
-import { readCodexAccountSnapshot, type CodexAccountSnapshot } from "./codexAccount";
+import {
+  readCodexAccountPayload,
+  readCodexAccountSnapshot,
+  readCodexRateLimitsPayload,
+  type CodexAccountSnapshot,
+} from "./codexAccount";
+
+export interface CodexAccountState {
+  readonly snapshot: CodexAccountSnapshot;
+  readonly account: Record<string, unknown> | null;
+  readonly rateLimits: Record<string, unknown> | null;
+}
 
 interface JsonRpcProbeResponse {
   readonly id?: unknown;
+  readonly method?: unknown;
+  readonly params?: unknown;
   readonly result?: unknown;
   readonly error?: {
     readonly message?: unknown;
   };
 }
+
+const RATE_LIMITS_PROBE_GRACE_MS = 1_500;
 
 function readErrorMessage(response: JsonRpcProbeResponse): string | undefined {
   return typeof response.error?.message === "string" ? response.error.message : undefined;
@@ -45,6 +60,15 @@ export async function probeCodexAccount(input: {
   readonly homePath?: string;
   readonly signal?: AbortSignal;
 }): Promise<CodexAccountSnapshot> {
+  const state = await probeCodexAccountState(input);
+  return state.snapshot;
+}
+
+export async function probeCodexAccountState(input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly signal?: AbortSignal;
+}): Promise<CodexAccountState> {
   return await new Promise((resolve, reject) => {
     const child = spawn(input.binaryPath, ["app-server"], {
       env: {
@@ -57,8 +81,16 @@ export async function probeCodexAccount(input: {
     const output = readline.createInterface({ input: child.stdout });
 
     let completed = false;
+    let accountSnapshot: CodexAccountSnapshot | null = null;
+    let accountPayload: Record<string, unknown> | null = null;
+    let rateLimitsPayload: Record<string, unknown> | null | undefined;
+    let rateLimitsFallbackTimer: NodeJS.Timeout | undefined;
 
     const cleanup = () => {
+      if (rateLimitsFallbackTimer) {
+        clearTimeout(rateLimitsFallbackTimer);
+        rateLimitsFallbackTimer = undefined;
+      }
       output.removeAllListeners();
       output.close();
       child.removeAllListeners();
@@ -82,6 +114,34 @@ export async function probeCodexAccount(input: {
             : new Error(`Codex account probe failed: ${String(error)}.`),
         ),
       );
+
+    const maybeFinish = () => {
+      if (!accountSnapshot) {
+        return;
+      }
+
+      if (rateLimitsPayload === undefined) {
+        if (!rateLimitsFallbackTimer) {
+          rateLimitsFallbackTimer = setTimeout(() => {
+            rateLimitsPayload = null;
+            maybeFinish();
+          }, RATE_LIMITS_PROBE_GRACE_MS);
+        }
+        return;
+      }
+
+      const snapshot = accountSnapshot;
+      const account = accountPayload ?? null;
+      const rateLimits = rateLimitsPayload;
+
+      finish(() =>
+        resolve({
+          snapshot,
+          account,
+          rateLimits,
+        }),
+      );
+    };
 
     if (input.signal?.aborted) {
       fail(new Error("Codex account probe aborted."));
@@ -112,6 +172,15 @@ export async function probeCodexAccount(input: {
       }
 
       const response = parsed as JsonRpcProbeResponse;
+      if (response.method === "account/rateLimits/updated") {
+        const payload =
+          readCodexRateLimitsPayload(response.params) ??
+          readCodexRateLimitsPayload(response.result);
+        rateLimitsPayload = payload ?? null;
+        maybeFinish();
+        return;
+      }
+
       if (response.id === 1) {
         const errorMessage = readErrorMessage(response);
         if (errorMessage) {
@@ -121,6 +190,7 @@ export async function probeCodexAccount(input: {
 
         writeMessage({ method: "initialized" });
         writeMessage({ id: 2, method: "account/read", params: {} });
+        writeMessage({ id: 3, method: "account/rateLimits/read", params: {} });
         return;
       }
 
@@ -131,7 +201,17 @@ export async function probeCodexAccount(input: {
           return;
         }
 
-        finish(() => resolve(readCodexAccountSnapshot(response.result)));
+        accountSnapshot = readCodexAccountSnapshot(response.result);
+        accountPayload = readCodexAccountPayload(response.result) ?? null;
+        maybeFinish();
+        return;
+      }
+
+      if (response.id === 3) {
+        rateLimitsPayload = readErrorMessage(response)
+          ? null
+          : (readCodexRateLimitsPayload(response.result) ?? null);
+        maybeFinish();
       }
     });
 

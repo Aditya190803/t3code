@@ -32,9 +32,18 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export function readCodexAccountSnapshot(response: unknown): CodexAccountSnapshot {
+export function readCodexAccountPayload(response: unknown): Record<string, unknown> | undefined {
   const record = asObject(response);
-  const account = asObject(record?.account) ?? record;
+  return asObject(record?.account) ?? record;
+}
+
+export function readCodexRateLimitsPayload(response: unknown): Record<string, unknown> | undefined {
+  const record = asObject(response);
+  return asObject(record?.rateLimits) ?? record;
+}
+
+export function readCodexAccountSnapshot(response: unknown): CodexAccountSnapshot {
+  const account = readCodexAccountPayload(response);
   const accountType = asString(account?.type);
 
   if (accountType === "apiKey") {

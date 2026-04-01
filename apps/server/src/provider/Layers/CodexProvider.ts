@@ -7,18 +7,7 @@ import type {
   ServerProviderAuth,
   ServerProviderState,
 } from "@t3tools/contracts";
-import {
-  Cache,
-  Duration,
-  Effect,
-  Equal,
-  FileSystem,
-  Layer,
-  Option,
-  Path,
-  Result,
-  Stream,
-} from "effect";
+import { Effect, Equal, FileSystem, Layer, Option, Path, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
@@ -44,13 +33,15 @@ import {
   codexAuthSubType,
   type CodexAccountSnapshot,
 } from "../codexAccount";
-import { probeCodexAccount } from "../codexAppServer";
+import { probeCodexAccountState, type CodexAccountState } from "../codexAppServer";
+import { normalizeProviderUsageFromRateLimits } from "../providerUsage";
 import { CodexProvider } from "../Services/CodexProvider";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSettingsError } from "@t3tools/contracts";
 
 const PROVIDER = "codex" as const;
 const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
+type MaybeCodexAccountState = CodexAccountState | CodexAccountSnapshot | undefined;
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "gpt-5.4",
@@ -297,7 +288,7 @@ const probeCodexCapabilities = (input: {
   readonly binaryPath: string;
   readonly homePath?: string;
 }) =>
-  Effect.tryPromise((signal) => probeCodexAccount({ ...input, signal })).pipe(
+  Effect.tryPromise((signal) => probeCodexAccountState({ ...input, signal })).pipe(
     Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
     Effect.result,
     Effect.map((result) => {
@@ -305,6 +296,20 @@ const probeCodexCapabilities = (input: {
       return Option.isSome(result.success) ? result.success.value : undefined;
     }),
   );
+
+function toCodexAccountState(account: MaybeCodexAccountState): CodexAccountState | undefined {
+  if (!account) {
+    return undefined;
+  }
+
+  return "snapshot" in account
+    ? account
+    : {
+        snapshot: account,
+        account: null,
+        rateLimits: null,
+      };
+}
 
 const runCodexCommand = Effect.fn("runCodexCommand")(function* (args: ReadonlyArray<string>) {
   const settingsService = yield* ServerSettingsService;
@@ -325,7 +330,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   resolveAccount?: (input: {
     readonly binaryPath: string;
     readonly homePath?: string;
-  }) => Effect.Effect<CodexAccountSnapshot | undefined>,
+  }) => Effect.Effect<MaybeCodexAccountState>,
 ): Effect.fn.Return<
   ServerProvider,
   ServerSettingsError,
@@ -456,13 +461,21 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
     Effect.result,
   );
-  const account = resolveAccount
-    ? yield* resolveAccount({
-        binaryPath: codexSettings.binaryPath,
-        homePath: codexSettings.homePath,
-      })
+  const accountState = resolveAccount
+    ? toCodexAccountState(
+        yield* resolveAccount({
+          binaryPath: codexSettings.binaryPath,
+          homePath: codexSettings.homePath,
+        }),
+      )
     : undefined;
-  const resolvedModels = adjustCodexModelsForAccount(models, account);
+  const accountSnapshot = accountState?.snapshot;
+  const resolvedModels = adjustCodexModelsForAccount(models, accountSnapshot);
+  const usage = normalizeProviderUsageFromRateLimits({
+    provider: PROVIDER,
+    rateLimits: accountState?.rateLimits,
+    updatedAt: checkedAt,
+  });
 
   if (Result.isFailure(authProbe)) {
     const error = authProbe.failure;
@@ -471,11 +484,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: resolvedModels,
+      ...(usage ? { usage } : {}),
       probe: {
         installed: true,
         version: parsedVersion,
         status: "warning",
         auth: { status: "unknown" },
+        ...(accountState?.account ? { account: accountState.account } : {}),
+        ...(accountState?.rateLimits ? { rateLimits: accountState.rateLimits } : {}),
         message:
           error instanceof Error
             ? `Could not verify Codex authentication status: ${error.message}.`
@@ -490,24 +506,28 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: resolvedModels,
+      ...(usage ? { usage } : {}),
       probe: {
         installed: true,
         version: parsedVersion,
         status: "warning",
         auth: { status: "unknown" },
+        ...(accountState?.account ? { account: accountState.account } : {}),
+        ...(accountState?.rateLimits ? { rateLimits: accountState.rateLimits } : {}),
         message: "Could not verify Codex authentication status. Timed out while running command.",
       },
     });
   }
 
   const parsed = parseAuthStatusFromOutput(authProbe.success.value);
-  const authType = codexAuthSubType(account);
-  const authLabel = codexAuthSubLabel(account);
+  const authType = codexAuthSubType(accountSnapshot);
+  const authLabel = codexAuthSubLabel(accountSnapshot);
   return buildServerProvider({
     provider: PROVIDER,
     enabled: codexSettings.enabled,
     checkedAt,
     models: resolvedModels,
+    ...(usage ? { usage } : {}),
     probe: {
       installed: true,
       version: parsedVersion,
@@ -517,6 +537,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         ...(authType ? { type: authType } : {}),
         ...(authLabel ? { label: authLabel } : {}),
       },
+      ...(accountState?.account ? { account: accountState.account } : {}),
+      ...(accountState?.rateLimits ? { rateLimits: accountState.rateLimits } : {}),
       ...(parsed.message ? { message: parsed.message } : {}),
     },
   });
@@ -529,20 +551,11 @@ export const CodexProviderLive = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const accountProbeCache = yield* Cache.make({
-      capacity: 4,
-      timeToLive: Duration.minutes(5),
-      lookup: (key: string) => {
-        const [binaryPath, homePath] = JSON.parse(key) as [string, string | undefined];
-        return probeCodexCapabilities({
-          binaryPath,
-          ...(homePath ? { homePath } : {}),
-        });
-      },
-    });
-
     const checkProvider = checkCodexProviderStatus((input) =>
-      Cache.get(accountProbeCache, JSON.stringify([input.binaryPath, input.homePath])),
+      probeCodexCapabilities({
+        binaryPath: input.binaryPath,
+        ...(input.homePath ? { homePath: input.homePath } : {}),
+      }),
     ).pipe(
       Effect.provideService(ServerSettingsService, serverSettings),
       Effect.provideService(FileSystem.FileSystem, fileSystem),

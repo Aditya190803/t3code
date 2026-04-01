@@ -107,6 +107,31 @@ function buildContextWindowActivityPayload(
   return event.payload.usage;
 }
 
+function buildAccountActivityPayload(
+  event: ProviderRuntimeEvent,
+): Record<string, unknown> | undefined {
+  switch (event.type) {
+    case "account.updated": {
+      const account = event.payload.account;
+      if (!account || typeof account !== "object" || Array.isArray(account)) {
+        return undefined;
+      }
+      return account as Record<string, unknown>;
+    }
+
+    case "account.rate-limits.updated": {
+      const rateLimits = event.payload.rateLimits;
+      if (!rateLimits || typeof rateLimits !== "object" || Array.isArray(rateLimits)) {
+        return undefined;
+      }
+      return rateLimits as Record<string, unknown>;
+    }
+
+    default:
+      return undefined;
+  }
+}
+
 function normalizeRuntimeTurnState(
   value: string | undefined,
 ): "completed" | "failed" | "interrupted" | "cancelled" {
@@ -421,6 +446,27 @@ function runtimeEventToActivities(
           tone: "info",
           kind: "context-window.updated",
           summary: "Context window updated",
+          payload,
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "account.updated":
+    case "account.rate-limits.updated": {
+      const payload = buildAccountActivityPayload(event);
+      if (!payload) {
+        return [];
+      }
+
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: event.type,
+          summary: event.type === "account.updated" ? "Account updated" : "Account quota updated",
           payload,
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
