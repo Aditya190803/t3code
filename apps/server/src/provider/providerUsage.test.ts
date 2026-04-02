@@ -182,6 +182,35 @@ describe("providerUsage", () => {
     ]);
   });
 
+  it("prefers remaining percentages over remaining counts when both are present", () => {
+    const usage = normalizeProviderUsageFromRateLimits({
+      provider: "codex",
+      updatedAt: "2026-03-31T10:00:00.000Z",
+      rateLimits: {
+        rateLimitsByLimitId: {
+          session: {
+            limitId: "session",
+            remainingPercent: 80,
+            remaining: 500,
+            limit: 1_000,
+            window_seconds: 18_000,
+            reset_at: 1_775_123_456,
+          },
+        },
+      },
+    });
+
+    expect(usage?.buckets).toEqual([
+      {
+        id: "fiveHour",
+        label: "Session limit",
+        remainingPercent: 80,
+        usedPercent: 20,
+        resetsAt: new Date(1_775_123_456_000).toISOString(),
+      },
+    ]);
+  });
+
   it("does not double-scale low percentages derived from usage and limit", () => {
     const usage = normalizeProviderUsageFromRateLimits({
       provider: "codex",

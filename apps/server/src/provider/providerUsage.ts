@@ -178,10 +178,10 @@ function makeUsageBucket(input: {
     derivePercentFromUsage(asNumber(input.usage), asNumber(input.limit));
   const remainingPercent = normalizePercent(asNumber(input.remainingPercent));
   const remainingCount = asNumber(input.remaining);
-  const derivedUsedPercentFromRemaining = deriveUsedPercentFromRemaining(
-    remainingPercent ?? remainingCount,
-    asNumber(input.limit),
-  );
+  const derivedUsedPercentFromRemaining =
+    remainingPercent === null
+      ? deriveUsedPercentFromRemaining(remainingCount, asNumber(input.limit))
+      : null;
   const resolvedUsedPercent = usedPercent ?? derivedUsedPercentFromRemaining;
   const resolvedRemainingPercent = deriveRemainingPercent(resolvedUsedPercent, remainingPercent);
   const resetsAt = toIsoDateTime(input.resetsAt);
