@@ -176,20 +176,17 @@ function makeUsageBucket(input: {
     normalizeUtilization(input.utilization) ??
     derivePercentFromUsage(asNumber(input.used), asNumber(input.limit)) ??
     derivePercentFromUsage(asNumber(input.usage), asNumber(input.limit));
+  const remainingPercent = normalizePercent(asNumber(input.remainingPercent));
+  const remainingCount = asNumber(input.remaining);
   const derivedUsedPercentFromRemaining = deriveUsedPercentFromRemaining(
-    normalizePercent(asNumber(input.remainingPercent)) ??
-      normalizePercent(asNumber(input.remaining)),
+    remainingPercent ?? remainingCount,
     asNumber(input.limit),
   );
   const resolvedUsedPercent = usedPercent ?? derivedUsedPercentFromRemaining;
-  const remainingPercent = deriveRemainingPercent(
-    resolvedUsedPercent,
-    normalizePercent(asNumber(input.remainingPercent)) ??
-      normalizePercent(asNumber(input.remaining)),
-  );
+  const resolvedRemainingPercent = deriveRemainingPercent(resolvedUsedPercent, remainingPercent);
   const resetsAt = toIsoDateTime(input.resetsAt);
 
-  if (resolvedUsedPercent === null || remainingPercent === null || !resetsAt) {
+  if (resolvedUsedPercent === null || resolvedRemainingPercent === null || !resetsAt) {
     return null;
   }
 
@@ -197,7 +194,7 @@ function makeUsageBucket(input: {
     id: input.id,
     label: input.label,
     usedPercent: resolvedUsedPercent,
-    remainingPercent,
+    remainingPercent: resolvedRemainingPercent,
     resetsAt,
   };
 }
