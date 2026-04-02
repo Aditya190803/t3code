@@ -147,7 +147,7 @@ describe("serverState", () => {
         providers: defaultProviders,
         settings: DEFAULT_SERVER_SETTINGS,
       },
-      "snapshot",
+      "providerStatuses",
     );
 
     unsubscribeLate();
@@ -329,7 +329,7 @@ describe("serverState", () => {
           buckets: [
             {
               id: "weekly",
-              label: "Weekly usage limit",
+              label: "Weekly limit",
               usedPercent: 12,
               remainingPercent: 88,
               resetsAt: "2026-01-08T16:19:00.000Z",

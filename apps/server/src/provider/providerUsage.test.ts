@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { mergeProviderUsage, normalizeProviderUsageFromRateLimits } from "./providerUsage";
+import {
+  deriveUsedPercentFromRemaining,
+  mergeProviderUsage,
+  normalizeProviderUsageFromRateLimits,
+} from "./providerUsage";
 
 describe("providerUsage", () => {
+  it("derives used percent from remaining values across edge cases", () => {
+    expect(deriveUsedPercentFromRemaining(null, 100)).toBeNull();
+    expect(deriveUsedPercentFromRemaining(0, 0)).toBe(100);
+    expect(deriveUsedPercentFromRemaining(100, 0)).toBe(0);
+    expect(deriveUsedPercentFromRemaining(100, null)).toBe(0);
+    expect(deriveUsedPercentFromRemaining(100, 100)).toBe(0);
+    expect(deriveUsedPercentFromRemaining(25, 100)).toBe(75);
+  });
+
   it("normalizes Codex five-hour and weekly buckets from rate-limit payloads", () => {
     const usage = normalizeProviderUsageFromRateLimits({
       provider: "codex",
@@ -32,14 +45,14 @@ describe("providerUsage", () => {
       buckets: [
         {
           id: "fiveHour",
-          label: "5 hour usage limit",
+          label: "Session limit",
           remainingPercent: 59,
           usedPercent: 41,
           resetsAt: new Date(1_775_123_456_000).toISOString(),
         },
         {
           id: "weekly",
-          label: "Weekly usage limit",
+          label: "Weekly limit",
           remainingPercent: 71,
           usedPercent: 29,
           resetsAt: new Date(1_775_555_565_000).toISOString(),
@@ -68,9 +81,74 @@ describe("providerUsage", () => {
     expect(usage?.buckets).toEqual([
       {
         id: "fiveHour",
-        label: "5 hour usage limit",
+        label: "Session limit",
         remainingPercent: 75,
         usedPercent: 25,
+        resetsAt: new Date(1_775_123_456_000).toISOString(),
+      },
+    ]);
+  });
+
+  it("normalizes Codex buckets when the payload reports used and remaining percentages", () => {
+    const usage = normalizeProviderUsageFromRateLimits({
+      provider: "codex",
+      updatedAt: "2026-03-31T10:00:00.000Z",
+      rateLimits: {
+        primary: {
+          used: 3,
+          remaining: 97,
+          window_seconds: 18_000,
+          reset_at: 1_775_123_456,
+        },
+        secondary: {
+          used: 29,
+          remaining: 71,
+          window_seconds: 604_800,
+          reset_at: 1_775_555_565,
+        },
+      },
+    });
+
+    expect(usage).toEqual({
+      updatedAt: "2026-03-31T10:00:00.000Z",
+      buckets: [
+        {
+          id: "fiveHour",
+          label: "Session limit",
+          remainingPercent: 97,
+          usedPercent: 3,
+          resetsAt: new Date(1_775_123_456_000).toISOString(),
+        },
+        {
+          id: "weekly",
+          label: "Weekly limit",
+          remainingPercent: 71,
+          usedPercent: 29,
+          resetsAt: new Date(1_775_555_565_000).toISOString(),
+        },
+      ],
+    });
+  });
+
+  it("derives usedPercent from remaining when the payload only reports remaining percentages", () => {
+    const usage = normalizeProviderUsageFromRateLimits({
+      provider: "codex",
+      updatedAt: "2026-03-31T10:00:00.000Z",
+      rateLimits: {
+        primary: {
+          remaining: 97,
+          window_seconds: 18_000,
+          reset_at: 1_775_123_456,
+        },
+      },
+    });
+
+    expect(usage?.buckets).toEqual([
+      {
+        id: "fiveHour",
+        label: "Session limit",
+        remainingPercent: 97,
+        usedPercent: 3,
         resetsAt: new Date(1_775_123_456_000).toISOString(),
       },
     ]);
@@ -116,7 +194,7 @@ describe("providerUsage", () => {
       buckets: [
         {
           id: "weekly",
-          label: "Weekly usage limit",
+          label: "Weekly limit",
           remainingPercent: 58,
           usedPercent: 42,
           resetsAt: new Date(1_775_463_116_000).toISOString(),
@@ -141,7 +219,7 @@ describe("providerUsage", () => {
     expect(usage?.buckets).toEqual([
       {
         id: "weekly",
-        label: "Weekly usage limit",
+        label: "Weekly limit",
         remainingPercent: 0,
         usedPercent: 100,
         resetsAt: new Date(1_775_463_116_000).toISOString(),
@@ -167,7 +245,7 @@ describe("providerUsage", () => {
       buckets: [
         {
           id: "fiveHour",
-          label: "5 hour usage limit",
+          label: "Session limit",
           remainingPercent: 85,
           usedPercent: 15,
           resetsAt: new Date(1_775_123_456_000).toISOString(),
@@ -203,14 +281,14 @@ describe("providerUsage", () => {
       buckets: [
         {
           id: "fiveHour",
-          label: "5 hour usage limit",
+          label: "Session limit",
           remainingPercent: 85,
           usedPercent: 15,
           resetsAt: new Date(1_775_123_456_000).toISOString(),
         },
         {
           id: "weekly",
-          label: "Weekly usage limit",
+          label: "Weekly limit",
           remainingPercent: 58,
           usedPercent: 42,
           resetsAt: new Date(1_775_463_116_000).toISOString(),
@@ -254,7 +332,7 @@ describe("providerUsage", () => {
         buckets: [
           {
             id: "fiveHour",
-            label: "5 hour usage limit",
+            label: "Session limit",
             remainingPercent: 80,
             usedPercent: 20,
             resetsAt: "2026-03-31T15:00:00.000Z",
@@ -266,7 +344,7 @@ describe("providerUsage", () => {
         buckets: [
           {
             id: "weekly",
-            label: "Weekly usage limit",
+            label: "Weekly limit",
             remainingPercent: 60,
             usedPercent: 40,
             resetsAt: "2026-04-06T10:00:00.000Z",
@@ -280,14 +358,14 @@ describe("providerUsage", () => {
       buckets: [
         {
           id: "fiveHour",
-          label: "5 hour usage limit",
+          label: "Session limit",
           remainingPercent: 80,
           usedPercent: 20,
           resetsAt: "2026-03-31T15:00:00.000Z",
         },
         {
           id: "weekly",
-          label: "Weekly usage limit",
+          label: "Weekly limit",
           remainingPercent: 60,
           usedPercent: 40,
           resetsAt: "2026-04-06T10:00:00.000Z",

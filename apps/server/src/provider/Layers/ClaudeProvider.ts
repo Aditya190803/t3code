@@ -608,9 +608,17 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   // ── Auth check + subscription detection ────────────────────────────
 
-  const authProbe = yield* runClaudeCommand(["auth", "status"]).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
+  const [authProbe, probeState] = yield* Effect.all(
+    [
+      runClaudeCommand(["auth", "status"]).pipe(
+        Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+        Effect.result,
+      ),
+      resolveSubscriptionType
+        ? resolveSubscriptionType(claudeSettings.binaryPath).pipe(Effect.map(toClaudeProbeState))
+        : Effect.void.pipe(Effect.as(undefined)),
+    ],
+    { concurrency: "unbounded" },
   );
 
   // Determine subscription type from multiple sources (cheapest first):
@@ -621,18 +629,14 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   let subscriptionType: string | undefined;
   let authMethod: string | undefined;
-  let probeState: ClaudeProbeState | undefined;
 
   if (Result.isSuccess(authProbe) && Option.isSome(authProbe.success)) {
     subscriptionType = extractSubscriptionTypeFromOutput(authProbe.success.value);
     authMethod = extractClaudeAuthMethodFromOutput(authProbe.success.value);
   }
 
-  if (resolveSubscriptionType) {
-    probeState = toClaudeProbeState(yield* resolveSubscriptionType(claudeSettings.binaryPath));
-    if (!subscriptionType) {
-      subscriptionType = probeState?.subscriptionType;
-    }
+  if (!subscriptionType) {
+    subscriptionType = probeState?.subscriptionType;
   }
 
   const resolvedModels = adjustModelsForSubscription(models, subscriptionType);

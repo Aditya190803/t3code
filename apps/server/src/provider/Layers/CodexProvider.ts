@@ -457,18 +457,21 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     });
   }
 
-  const authProbe = yield* runCodexCommand(["login", "status"]).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
+  const [authProbe, accountState] = yield* Effect.all(
+    [
+      runCodexCommand(["login", "status"]).pipe(
+        Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+        Effect.result,
+      ),
+      resolveAccount
+        ? resolveAccount({
+            binaryPath: codexSettings.binaryPath,
+            homePath: codexSettings.homePath,
+          }).pipe(Effect.map(toCodexAccountState))
+        : Effect.void.pipe(Effect.as(undefined)),
+    ],
+    { concurrency: "unbounded" },
   );
-  const accountState = resolveAccount
-    ? toCodexAccountState(
-        yield* resolveAccount({
-          binaryPath: codexSettings.binaryPath,
-          homePath: codexSettings.homePath,
-        }),
-      )
-    : undefined;
   const accountSnapshot = accountState?.snapshot;
   const resolvedModels = adjustCodexModelsForAccount(models, accountSnapshot);
   const usage = normalizeProviderUsageFromRateLimits({

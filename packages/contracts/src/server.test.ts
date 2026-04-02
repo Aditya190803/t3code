@@ -7,7 +7,7 @@ describe("server contracts", () => {
   it("decodes normalized provider usage buckets", () => {
     const bucket = Schema.decodeUnknownSync(ServerProviderUsageBucket)({
       id: "fiveHour",
-      label: "5 hour usage limit",
+      label: "Session limit",
       remainingPercent: 63,
       usedPercent: 37,
       resetsAt: "2026-03-31T12:00:00.000Z",
@@ -23,7 +23,7 @@ describe("server contracts", () => {
       buckets: [
         {
           id: "weekly",
-          label: "Weekly usage limit",
+          label: "Weekly limit",
           remainingPercent: 58,
           usedPercent: 42,
           resetsAt: "2026-04-06T05:12:45.000Z",
@@ -49,7 +49,7 @@ describe("server contracts", () => {
         buckets: [
           {
             id: "weekly",
-            label: "Weekly usage limit",
+            label: "Weekly limit",
             remainingPercent: 58,
             usedPercent: 42,
             resetsAt: "2026-04-06T05:12:45.000Z",
@@ -59,6 +59,6 @@ describe("server contracts", () => {
       models: [],
     });
 
-    expect(provider.usage?.buckets[0]?.label).toBe("Weekly usage limit");
+    expect(provider.usage?.buckets[0]?.label).toBe("Weekly limit");
   });
 });

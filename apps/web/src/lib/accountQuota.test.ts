@@ -31,14 +31,14 @@ describe("accountQuota", () => {
           buckets: [
             {
               id: "fiveHour",
-              label: "5 hour usage limit",
+              label: "Session limit",
               remainingPercent: 67,
               usedPercent: 33,
               resetsAt: "2026-04-01T05:30:00.000Z",
             },
             {
               id: "weekly",
-              label: "Weekly usage limit",
+              label: "Weekly limit",
               remainingPercent: 71,
               usedPercent: 29,
               resetsAt: "2026-04-06T05:12:45.000Z",
@@ -58,7 +58,7 @@ describe("accountQuota", () => {
     expect(
       formatUsageRemainingPercent({
         id: "weekly",
-        label: "Weekly usage limit",
+        label: "Weekly limit",
         remainingPercent: 58,
         usedPercent: 42,
         resetsAt: "2026-04-06T05:12:45.000Z",

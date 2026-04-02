@@ -23,7 +23,8 @@ interface JsonRpcProbeResponse {
   };
 }
 
-const RATE_LIMITS_PROBE_GRACE_MS = 150;
+const RATE_LIMITS_PROBE_GRACE_MS = 300;
+const EXIT_GRACE_MS = 50;
 
 function readErrorMessage(response: JsonRpcProbeResponse): string | undefined {
   return typeof response.error?.message === "string" ? response.error.message : undefined;
@@ -85,6 +86,7 @@ export async function probeCodexAccountState(input: {
     let accountPayload: Record<string, unknown> | null = null;
     let rateLimitsPayload: Record<string, unknown> | null | undefined;
     let rateLimitsFallbackTimer: NodeJS.Timeout | undefined;
+    let rateLimitsRequestedAt: number | null = null;
 
     const cleanup = () => {
       if (rateLimitsFallbackTimer) {
@@ -121,11 +123,19 @@ export async function probeCodexAccountState(input: {
       }
 
       if (rateLimitsPayload === undefined) {
+        if (rateLimitsRequestedAt === null) {
+          return;
+        }
+
         if (!rateLimitsFallbackTimer) {
+          const remainingGraceMs = Math.max(
+            0,
+            RATE_LIMITS_PROBE_GRACE_MS - (Date.now() - rateLimitsRequestedAt),
+          );
           rateLimitsFallbackTimer = setTimeout(() => {
             rateLimitsPayload = null;
             maybeFinish();
-          }, RATE_LIMITS_PROBE_GRACE_MS);
+          }, remainingGraceMs);
         }
         return;
       }
@@ -190,6 +200,7 @@ export async function probeCodexAccountState(input: {
 
         writeMessage({ method: "initialized" });
         writeMessage({ id: 2, method: "account/read", params: {} });
+        rateLimitsRequestedAt = Date.now();
         writeMessage({ id: 3, method: "account/rateLimits/read", params: {} });
         return;
       }
@@ -208,21 +219,31 @@ export async function probeCodexAccountState(input: {
       }
 
       if (response.id === 3) {
-        rateLimitsPayload = readErrorMessage(response)
-          ? null
-          : (readCodexRateLimitsPayload(response.result) ?? null);
+        const payload = readCodexRateLimitsPayload(response.result);
+        if (payload) {
+          rateLimitsPayload = payload;
+        }
         maybeFinish();
       }
     });
 
     child.once("error", fail);
     child.once("exit", (code, signal) => {
-      if (completed) return;
-      fail(
-        new Error(
-          `codex app-server exited before probe completed (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
-        ),
-      );
+      setTimeout(() => {
+        if (completed) return;
+        if (accountSnapshot) {
+          rateLimitsPayload ??= null;
+          maybeFinish();
+          if (completed) {
+            return;
+          }
+        }
+        fail(
+          new Error(
+            `codex app-server exited before probe completed (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
+          ),
+        );
+      }, EXIT_GRACE_MS);
     });
 
     writeMessage({

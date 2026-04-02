@@ -65,7 +65,8 @@ function normalizePercent(value: number | null): number | null {
     return null;
   }
 
-  return Math.max(0, Math.min(100, value));
+  const normalized = Math.max(0, Math.min(100, value));
+  return Math.round(normalized * 1_000_000) / 1_000_000;
 }
 
 function normalizeUtilization(value: unknown): number | null {
@@ -88,6 +89,22 @@ function derivePercentFromUsage(usage: number | null, limit: number | null): num
   }
 
   return normalizePercent(usage);
+}
+
+/** @internal - Exported for testing */
+export function deriveUsedPercentFromRemaining(
+  remaining: number | null,
+  limit: number | null,
+): number | null {
+  if (remaining === null) {
+    return null;
+  }
+
+  if (limit !== null && limit > 0) {
+    return normalizePercent(((limit - remaining) / limit) * 100);
+  }
+
+  return normalizePercent(100 - remaining);
 }
 
 function toIsoDateTime(value: unknown): string | null {
@@ -130,7 +147,7 @@ function deriveRemainingPercent(
 }
 
 function toUsageBucketLabel(id: ServerProviderUsageBucketId): string {
-  return id === "fiveHour" ? "5 hour usage limit" : "Weekly usage limit";
+  return id === "fiveHour" ? "Session limit" : "Weekly limit";
 }
 
 function getRecordValue(record: Record<string, unknown>, keys: ReadonlyArray<string>): unknown {
@@ -149,27 +166,37 @@ function makeUsageBucket(input: {
   usedPercent?: unknown;
   utilization?: unknown;
   remainingPercent?: unknown;
+  remaining?: unknown;
+  used?: unknown;
   usage?: unknown;
   limit?: unknown;
 }): ServerProviderUsageBucket | null {
   const usedPercent =
     normalizePercent(asNumber(input.usedPercent)) ??
     normalizeUtilization(input.utilization) ??
+    derivePercentFromUsage(asNumber(input.used), asNumber(input.limit)) ??
     derivePercentFromUsage(asNumber(input.usage), asNumber(input.limit));
+  const derivedUsedPercentFromRemaining = deriveUsedPercentFromRemaining(
+    normalizePercent(asNumber(input.remainingPercent)) ??
+      normalizePercent(asNumber(input.remaining)),
+    asNumber(input.limit),
+  );
+  const resolvedUsedPercent = usedPercent ?? derivedUsedPercentFromRemaining;
   const remainingPercent = deriveRemainingPercent(
-    usedPercent,
-    normalizePercent(asNumber(input.remainingPercent)),
+    resolvedUsedPercent,
+    normalizePercent(asNumber(input.remainingPercent)) ??
+      normalizePercent(asNumber(input.remaining)),
   );
   const resetsAt = toIsoDateTime(input.resetsAt);
 
-  if (usedPercent === null || remainingPercent === null || !resetsAt) {
+  if (resolvedUsedPercent === null || remainingPercent === null || !resetsAt) {
     return null;
   }
 
   return {
     id: input.id,
     label: input.label,
-    usedPercent,
+    usedPercent: resolvedUsedPercent,
     remainingPercent,
     resetsAt,
   };
@@ -251,6 +278,8 @@ function normalizeCodexUsageBuckets(rateLimits: Record<string, unknown>) {
       usedPercent: getRecordValue(bucket, ["usedPercent"]),
       utilization: getRecordValue(bucket, ["utilization"]),
       remainingPercent: getRecordValue(bucket, ["remainingPercent", "remaining"]),
+      remaining: getRecordValue(bucket, ["remaining"]),
+      used: getRecordValue(bucket, ["used"]),
       usage: getRecordValue(bucket, ["usage"]),
       limit: getRecordValue(bucket, ["limit"]),
       resetsAt: getRecordValue(bucket, ["resetsAt", "resetAt", "reset_at", "reset"]),
@@ -311,6 +340,8 @@ function normalizeClaudeUsageBuckets(
       label: toUsageBucketLabel(bucketId),
       utilization: getRecordValue(resolvedRateLimitInfo, ["utilization"]),
       remainingPercent: getRecordValue(resolvedRateLimitInfo, ["remainingPercent", "remaining"]),
+      remaining: getRecordValue(resolvedRateLimitInfo, ["remaining"]),
+      used: getRecordValue(resolvedRateLimitInfo, ["used"]),
       usage: getRecordValue(resolvedRateLimitInfo, ["usage"]),
       limit: getRecordValue(resolvedRateLimitInfo, ["limit"]),
       resetsAt: getRecordValue(resolvedRateLimitInfo, ["resetsAt", "resetAt", "reset_at"]),
