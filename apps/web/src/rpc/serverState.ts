@@ -18,6 +18,7 @@ import { appAtomRegistry, resetAppAtomRegistryForTests } from "./atomRegistry";
 export type ServerConfigUpdateSource = ServerConfigStreamEvent["type"];
 
 export interface ServerConfigUpdatedNotification {
+  readonly id: number;
   readonly payload: ServerConfigUpdatedPayload;
   readonly source: ServerConfigUpdateSource;
 }
@@ -69,6 +70,10 @@ export const providersUpdatedAtom = makeStateAtom<ServerProviderUpdatedPayload |
 
 export function getServerConfig(): ServerConfig | null {
   return appAtomRegistry.get(serverConfigAtom);
+}
+
+export function getServerConfigUpdatedNotification(): ServerConfigUpdatedNotification | null {
+  return appAtomRegistry.get(serverConfigUpdatedAtom);
 }
 
 export function setServerConfigSnapshot(config: ServerConfig): void {
@@ -218,7 +223,10 @@ export function startServerStateSync(client: ServerStateClient): () => void {
 
 export function resetServerStateForTests() {
   resetAppAtomRegistryForTests();
+  nextServerConfigUpdatedNotificationId = 1;
 }
+
+let nextServerConfigUpdatedNotificationId = 1;
 
 function resolveServerConfig(config: ServerConfig): void {
   appAtomRegistry.set(serverConfigAtom, config);
@@ -232,7 +240,11 @@ function emitServerConfigUpdated(
   payload: ServerConfigUpdatedPayload,
   source: ServerConfigUpdateSource,
 ): void {
-  appAtomRegistry.set(serverConfigUpdatedAtom, { payload, source });
+  appAtomRegistry.set(serverConfigUpdatedAtom, {
+    id: nextServerConfigUpdatedNotificationId++,
+    payload,
+    source,
+  });
 }
 
 function subscribeLatest<A>(
