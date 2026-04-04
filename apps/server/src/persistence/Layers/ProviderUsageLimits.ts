@@ -34,8 +34,9 @@ const makeProviderUsageLimitsRepository = Effect.gen(function* () {
     PubSub.shutdown,
   );
 
-  const upsertUsageLimitsRow = SqlSchema.void({
+  const upsertUsageLimitsRow = SqlSchema.findOneOption({
     Request: ProviderUsageLimitsDbRowSchema,
+    Result: ProviderUsageLimitsDbRowSchema,
     execute: (row) =>
       sql`
         INSERT INTO provider_usage_limits (
@@ -52,6 +53,11 @@ const makeProviderUsageLimitsRepository = Effect.gen(function* () {
         DO UPDATE SET
           updated_at = excluded.updated_at,
           payload_json = excluded.payload_json
+        WHERE excluded.updated_at > provider_usage_limits.updated_at
+        RETURNING
+          provider_name AS "provider",
+          updated_at AS "updatedAt",
+          payload_json AS "usageLimits"
       `,
   });
 
@@ -102,27 +108,19 @@ const makeProviderUsageLimitsRepository = Effect.gen(function* () {
       usageLimits: input.usageLimits,
     };
 
-    return getByProvider({ provider: input.provider }).pipe(
-      Effect.flatMap((existing) => {
-        if (
-          Option.isSome(existing) &&
-          existing.value.updatedAt === row.updatedAt &&
-          JSON.stringify(existing.value.usageLimits) === JSON.stringify(row.usageLimits)
-        ) {
-          return Effect.void;
-        }
-
-        return upsertUsageLimitsRow(row).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProviderUsageLimitsRepository.upsert:query",
-              "ProviderUsageLimitsRepository.upsert:encodeRequest",
-            ),
-          ),
-          Effect.tap(() => PubSub.publish(changesPubSub, row)),
-          Effect.asVoid,
-        );
-      }),
+    return upsertUsageLimitsRow(row).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderUsageLimitsRepository.upsert:query",
+          "ProviderUsageLimitsRepository.upsert:requestOrRow",
+        ),
+      ),
+      Effect.flatMap((rowOption) =>
+        Option.match(rowOption, {
+          onNone: () => Effect.void,
+          onSome: (updatedRow) => PubSub.publish(changesPubSub, updatedRow).pipe(Effect.asVoid),
+        }),
+      ),
     );
   };
 

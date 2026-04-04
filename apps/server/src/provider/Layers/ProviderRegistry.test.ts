@@ -333,6 +333,71 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
         ),
       );
 
+      it.effect("prefers persisted codex usage limits over cached probe limits", () =>
+        Effect.gen(function* () {
+          yield* withTempCodexHome();
+          const status = yield* checkCodexProviderStatus(
+            () =>
+              Effect.succeed({
+                snapshot: {
+                  type: "chatgpt" as const,
+                  planType: "pro" as const,
+                  sparkEnabled: true,
+                },
+                account: null,
+                rateLimits: null,
+                usageLimits: {
+                  updatedAt: "2026-04-04T00:00:00.000Z",
+                  windows: [
+                    {
+                      kind: "weekly",
+                      label: "Weekly limit",
+                      usedPercentage: 91,
+                      resetsAt: "2026-04-08T00:00:00.000Z",
+                      windowDurationMins: 10_080,
+                    },
+                  ],
+                },
+              }),
+            () =>
+              Effect.succeed({
+                updatedAt: "2026-04-04T02:00:00.000Z",
+                windows: [
+                  {
+                    kind: "weekly" as const,
+                    label: "Weekly limit",
+                    usedPercentage: 27,
+                    resetsAt: "2026-04-09T00:00:00.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              }),
+          );
+
+          assert.deepStrictEqual(status.usageLimits, {
+            updatedAt: "2026-04-04T02:00:00.000Z",
+            windows: [
+              {
+                kind: "weekly",
+                label: "Weekly limit",
+                usedPercentage: 27,
+                resetsAt: "2026-04-09T00:00:00.000Z",
+                windowDurationMins: 10_080,
+              },
+            ],
+          });
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
+              if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("hides spark from codex models for unsupported chatgpt plans", () =>
         Effect.gen(function* () {
           yield* withTempCodexHome();
@@ -892,6 +957,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
               Stream.runForEach((providers) => Ref.set(publishedRef, providers)),
               Effect.forkScoped,
             );
+
+            yield* Effect.yieldNow;
 
             yield* repository.upsert({
               provider: "claudeAgent",

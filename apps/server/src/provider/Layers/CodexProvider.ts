@@ -491,9 +491,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     : undefined;
   const accountSnapshot = isResolvedCodexAccountState(account) ? account.snapshot : account;
   const resolvedModels = adjustCodexModelsForAccount(models, accountSnapshot);
-  const usageLimits = isResolvedCodexAccountState(account)
-    ? (account.usageLimits ?? cachedUsageLimits)
-    : cachedUsageLimits;
+  const accountUsageLimits = isResolvedCodexAccountState(account) ? account.usageLimits : undefined;
+  const usageLimits = cachedUsageLimits ?? accountUsageLimits;
 
   if (Result.isFailure(authProbe)) {
     const error = authProbe.failure;
