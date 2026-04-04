@@ -237,12 +237,3 @@ export async function probeCodexAccountState(input: {
     });
   });
 }
-
-export async function probeCodexAccount(input: {
-  readonly binaryPath: string;
-  readonly homePath?: string;
-  readonly signal?: AbortSignal;
-}): Promise<CodexAccountSnapshot> {
-  const state = await probeCodexAccountState(input);
-  return state.snapshot;
-}
