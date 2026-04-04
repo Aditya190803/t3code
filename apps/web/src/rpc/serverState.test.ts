@@ -47,6 +47,18 @@ const defaultProviders: ReadonlyArray<ServerProvider> = [
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
     models: [],
+    usageLimits: {
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      windows: [
+        {
+          kind: "weekly",
+          label: "Weekly limit",
+          usedPercentage: 12,
+          resetsAt: "2026-01-08T00:00:00.000Z",
+          windowDurationMins: 10_080,
+        },
+      ],
+    },
   },
 ];
 
@@ -239,6 +251,25 @@ describe("serverState", () => {
         status: "warning",
         checkedAt: "2026-01-02T00:00:00.000Z",
         message: "rate limited",
+        usageLimits: {
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          windows: [
+            {
+              kind: "session",
+              label: "Session limit",
+              usedPercentage: 66,
+              resetsAt: "2026-01-02T05:00:00.000Z",
+              windowDurationMins: 300,
+            },
+            {
+              kind: "weekly",
+              label: "Weekly limit",
+              usedPercentage: 24,
+              resetsAt: "2026-01-09T00:00:00.000Z",
+              windowDurationMins: 10_080,
+            },
+          ],
+        },
       },
     ];
 

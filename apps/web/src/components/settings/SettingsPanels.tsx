@@ -47,7 +47,11 @@ import {
 } from "../../modelSelection";
 import { ensureNativeApi, readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
-import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
+import {
+  formatRelativeTime,
+  formatRelativeTimeLabel,
+  getTimestampFormatOptions,
+} from "../../timestampFormat";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -214,6 +218,60 @@ function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }
         <>Checked {lastCheckedRelative.value}</>
       )}
     </span>
+  );
+}
+
+function formatUsageLimitResetLabel(
+  resetsAt: string,
+  timestampFormat: (typeof DEFAULT_UNIFIED_SETTINGS)["timestampFormat"],
+) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    ...getTimestampFormatOptions(timestampFormat, false),
+  }).format(new Date(resetsAt));
+}
+
+function ProviderUsageLimitsSection({
+  provider,
+  timestampFormat,
+}: {
+  provider: ServerProvider;
+  timestampFormat: (typeof DEFAULT_UNIFIED_SETTINGS)["timestampFormat"];
+}) {
+  const windows = provider.usageLimits?.windows ?? [];
+
+  if (windows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+      <div className="space-y-3">
+        {windows.map((window) => {
+          const remainingPercentage = Math.max(0, 100 - window.usedPercentage);
+
+          return (
+            <div key={`${window.kind}:${window.resetsAt}`} className="space-y-1.5">
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="font-medium text-foreground">{window.label}</span>
+                <span className="text-muted-foreground">{remainingPercentage}% remaining</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-muted/80">
+                <div
+                  className="h-full rounded-full bg-foreground/75 transition-[width] duration-300"
+                  style={{ width: `${window.usedPercentage}%` }}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Resets {formatUsageLimitResetLabel(window.resetsAt, timestampFormat)}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1193,6 +1251,13 @@ export function GeneralSettingsPanel() {
                   </div>
                 </div>
               </div>
+
+              {providerCard.liveProvider ? (
+                <ProviderUsageLimitsSection
+                  provider={providerCard.liveProvider}
+                  timestampFormat={settings.timestampFormat}
+                />
+              ) : null}
 
               <Collapsible
                 open={openProviderDetails[providerCard.provider]}
