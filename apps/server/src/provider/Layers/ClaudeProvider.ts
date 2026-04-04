@@ -5,6 +5,7 @@ import type {
   ServerProviderModel,
   ServerProviderAuth,
   ServerProviderState,
+  ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { Cache, Duration, Effect, Equal, Layer, Option, Result, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -26,6 +27,8 @@ import { makeManagedServerProvider } from "../makeManagedServerProvider";
 import { ClaudeProvider } from "../Services/ClaudeProvider";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSettingsError } from "@t3tools/contracts";
+import { readPersistedProviderUsageLimits } from "../providerUsageLimits";
+import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
 
 const PROVIDER = "claudeAgent" as const;
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
@@ -440,6 +443,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (args: Readonly
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   resolveSubscriptionType?: (binaryPath: string) => Effect.Effect<string | undefined>,
+  resolveCachedUsageLimits?: () => Effect.Effect<ServerProviderUsageLimits | undefined>,
 ): Effect.fn.Return<
   ServerProvider,
   ServerSettingsError,
@@ -451,13 +455,32 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   );
   const checkedAt = new Date().toISOString();
   const models = providerModelsFromSettings(BUILT_IN_MODELS, PROVIDER, claudeSettings.customModels);
+  const cachedUsageLimits = resolveCachedUsageLimits
+    ? yield* resolveCachedUsageLimits()
+    : undefined;
+
+  const buildProviderSnapshot = (input: {
+    readonly probe: {
+      installed: boolean;
+      version: string | null;
+      status: Exclude<ServerProviderState, "disabled">;
+      auth: ServerProviderAuth;
+      message?: string;
+    };
+    readonly models?: ReadonlyArray<ServerProviderModel>;
+    readonly usageLimits?: ServerProviderUsageLimits;
+  }) =>
+    buildServerProvider({
+      provider: PROVIDER,
+      enabled: claudeSettings.enabled,
+      checkedAt,
+      models: input.models ?? models,
+      probe: input.probe,
+      ...(input.usageLimits ? { usageLimits: input.usageLimits } : {}),
+    });
 
   if (!claudeSettings.enabled) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: false,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: false,
         version: null,
@@ -465,6 +488,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         auth: { status: "unknown" },
         message: "Claude is disabled in T3 Code settings.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
@@ -475,11 +499,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: claudeSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: !isCommandMissingCause(error),
         version: null,
@@ -489,15 +509,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
           : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   if (Option.isNone(versionProbe.success)) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: claudeSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: true,
         version: null,
@@ -506,6 +523,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         message:
           "Claude Agent CLI is installed but failed to run. Timed out while running command.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
@@ -513,11 +531,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
   if (version.code !== 0) {
     const detail = detailFromResult(version);
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: claudeSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: true,
         version: parsedVersion,
@@ -527,6 +541,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           ? `Claude Agent CLI is installed but failed to run. ${detail}`
           : "Claude Agent CLI is installed but failed to run.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
@@ -561,10 +576,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   if (Result.isFailure(authProbe)) {
     const error = authProbe.failure;
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: claudeSettings.enabled,
-      checkedAt,
+    return buildProviderSnapshot({
       models: resolvedModels,
       probe: {
         installed: true,
@@ -576,14 +588,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
             ? `Could not verify Claude authentication status: ${error.message}.`
             : "Could not verify Claude authentication status.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   if (Option.isNone(authProbe.success)) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: claudeSettings.enabled,
-      checkedAt,
+    return buildProviderSnapshot({
       models: resolvedModels,
       probe: {
         installed: true,
@@ -592,15 +602,13 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         auth: { status: "unknown" },
         message: "Could not verify Claude authentication status. Timed out while running command.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   const parsed = parseClaudeAuthStatusFromOutput(authProbe.success.value);
   const authMetadata = claudeAuthMetadata({ subscriptionType, authMethod });
-  return buildServerProvider({
-    provider: PROVIDER,
-    enabled: claudeSettings.enabled,
-    checkedAt,
+  return buildProviderSnapshot({
     models: resolvedModels,
     probe: {
       installed: true,
@@ -612,6 +620,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       },
       ...(parsed.message ? { message: parsed.message } : {}),
     },
+    ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
   });
 });
 
@@ -620,6 +629,7 @@ export const ClaudeProviderLive = Layer.effect(
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const usageLimitsRepository = yield* ProviderUsageLimitsRepository;
 
     const subscriptionProbeCache = yield* Cache.make({
       capacity: 1,
@@ -628,11 +638,16 @@ export const ClaudeProviderLive = Layer.effect(
         probeClaudeCapabilities(binaryPath).pipe(Effect.map((r) => r?.subscriptionType)),
     });
 
-    const checkProvider = checkClaudeProviderStatus((binaryPath) =>
-      Cache.get(subscriptionProbeCache, binaryPath),
+    const checkProvider = checkClaudeProviderStatus(
+      (binaryPath) => Cache.get(subscriptionProbeCache, binaryPath),
+      () =>
+        readPersistedProviderUsageLimits(PROVIDER, usageLimitsRepository).pipe(
+          Effect.orElseSucceed(() => undefined),
+        ),
     ).pipe(
       Effect.provideService(ServerSettingsService, serverSettings),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(ProviderUsageLimitsRepository, usageLimitsRepository),
     );
 
     return yield* makeManagedServerProvider<ClaudeSettings>({

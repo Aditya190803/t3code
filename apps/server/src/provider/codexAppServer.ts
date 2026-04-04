@@ -1,5 +1,4 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import readline from "node:readline";
 import { readCodexAccountSnapshot, type CodexAccountSnapshot } from "./codexAccount";
 
 interface JsonRpcProbeResponse {
@@ -12,6 +11,10 @@ interface JsonRpcProbeResponse {
 
 function readErrorMessage(response: JsonRpcProbeResponse): string | undefined {
   return typeof response.error?.message === "string" ? response.error.message : undefined;
+}
+
+function readCodexRateLimitsSnapshot(response: unknown): unknown | null {
+  return response ?? null;
 }
 
 export function buildCodexInitializeParams() {
@@ -40,11 +43,17 @@ export function killCodexChildProcess(child: ChildProcessWithoutNullStreams): vo
   child.kill();
 }
 
-export async function probeCodexAccount(input: {
+export interface CodexAccountState {
+  readonly snapshot: CodexAccountSnapshot;
+  readonly account: unknown | null;
+  readonly rateLimits: unknown | null;
+}
+
+export async function probeCodexAccountState(input: {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly signal?: AbortSignal;
-}): Promise<CodexAccountSnapshot> {
+}): Promise<CodexAccountState> {
   return await new Promise((resolve, reject) => {
     const child = spawn(input.binaryPath, ["app-server"], {
       env: {
@@ -54,13 +63,21 @@ export async function probeCodexAccount(input: {
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
     });
-    const output = readline.createInterface({ input: child.stdout });
-
     let completed = false;
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    let accountResult: unknown | undefined;
+    let rateLimitsResult: unknown | null | undefined;
+    let handleAbort: (() => void) | undefined;
+    let stdoutBuffer = "";
 
     const cleanup = () => {
-      output.removeAllListeners();
-      output.close();
+      if (settleTimer !== undefined) {
+        clearTimeout(settleTimer);
+      }
+      if (handleAbort) {
+        input.signal?.removeEventListener("abort", handleAbort);
+      }
+      child.stdout.removeAllListeners();
       child.removeAllListeners();
       if (!child.killed) {
         killCodexChildProcess(child);
@@ -87,7 +104,34 @@ export async function probeCodexAccount(input: {
       fail(new Error("Codex account probe aborted."));
       return;
     }
-    input.signal?.addEventListener("abort", () => fail(new Error("Codex account probe aborted.")));
+    handleAbort = () => fail(new Error("Codex account probe aborted."));
+    input.signal?.addEventListener("abort", handleAbort);
+
+    const maybeResolve = () => {
+      if (accountResult === undefined) {
+        return;
+      }
+
+      if (rateLimitsResult !== undefined) {
+        finish(() =>
+          resolve({
+            snapshot: readCodexAccountSnapshot(accountResult),
+            account: accountResult ?? null,
+            rateLimits: rateLimitsResult,
+          }),
+        );
+        return;
+      }
+
+      if (settleTimer !== undefined) {
+        return;
+      }
+
+      settleTimer = setTimeout(() => {
+        rateLimitsResult = null;
+        maybeResolve();
+      }, 150);
+    };
 
     const writeMessage = (message: unknown) => {
       if (!child.stdin.writable) {
@@ -98,7 +142,7 @@ export async function probeCodexAccount(input: {
       child.stdin.write(`${JSON.stringify(message)}\n`);
     };
 
-    output.on("line", (line) => {
+    const processOutputLine = (line: string) => {
       let parsed: unknown;
       try {
         parsed = JSON.parse(line);
@@ -121,6 +165,7 @@ export async function probeCodexAccount(input: {
 
         writeMessage({ method: "initialized" });
         writeMessage({ id: 2, method: "account/read", params: {} });
+        writeMessage({ id: 3, method: "account/rateLimits/read", params: {} });
         return;
       }
 
@@ -131,13 +176,53 @@ export async function probeCodexAccount(input: {
           return;
         }
 
-        finish(() => resolve(readCodexAccountSnapshot(response.result)));
+        accountResult = response.result ?? null;
+        maybeResolve();
+        return;
+      }
+
+      if (response.id === 3) {
+        const errorMessage = readErrorMessage(response);
+        if (errorMessage) {
+          rateLimitsResult = null;
+          maybeResolve();
+          return;
+        }
+
+        rateLimitsResult = readCodexRateLimitsSnapshot(response.result);
+        maybeResolve();
+      }
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdoutBuffer += chunk;
+
+      let newlineIndex = stdoutBuffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIndex).trim();
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        if (line.length > 0) {
+          processOutputLine(line);
+        }
+        newlineIndex = stdoutBuffer.indexOf("\n");
       }
     });
 
     child.once("error", fail);
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       if (completed) return;
+      const trailingLine = stdoutBuffer.trim();
+      if (trailingLine.length > 0) {
+        stdoutBuffer = "";
+        processOutputLine(trailingLine);
+        if (completed) return;
+      }
+      if (accountResult !== undefined) {
+        rateLimitsResult = rateLimitsResult ?? null;
+        maybeResolve();
+        return;
+      }
       fail(
         new Error(
           `codex app-server exited before probe completed (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
@@ -151,4 +236,13 @@ export async function probeCodexAccount(input: {
       params: buildCodexInitializeParams(),
     });
   });
+}
+
+export async function probeCodexAccount(input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly signal?: AbortSignal;
+}): Promise<CodexAccountSnapshot> {
+  const state = await probeCodexAccountState(input);
+  return state.snapshot;
 }

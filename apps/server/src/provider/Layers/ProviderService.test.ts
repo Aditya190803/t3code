@@ -38,6 +38,8 @@ import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
 import { ProviderSessionRuntimeRepository } from "../../persistence/Services/ProviderSessionRuntime.ts";
+import { ProviderUsageLimitsRepositoryLive } from "../../persistence/Layers/ProviderUsageLimits.ts";
+import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
@@ -241,6 +243,12 @@ const hasMetricSnapshot = (
       Object.entries(attributes).every(([key, value]) => snapshot.attributes?.[key] === value),
   );
 
+const makeUsageLimitsRepositoryLayer = (
+  persistenceLayer:
+    | typeof SqlitePersistenceMemory
+    | ReturnType<typeof makeSqlitePersistenceLive> = SqlitePersistenceMemory,
+) => ProviderUsageLimitsRepositoryLive.pipe(Layer.provide(persistenceLayer));
+
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter("claudeAgent");
@@ -258,6 +266,7 @@ function makeProviderServiceLayer() {
   const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
   );
+  const usageLimitsRepositoryLayer = makeUsageLimitsRepositoryLayer();
   const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
 
   const layer = it.layer(
@@ -267,12 +276,11 @@ function makeProviderServiceLayer() {
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provideMerge(usageLimitsRepositoryLayer),
       ),
       directoryLayer,
-
       runtimeRepositoryLayer,
-      NodeServices.layer,
-    ),
+    ).pipe(Layer.provideMerge(NodeServices.layer)),
   );
 
   return {
@@ -306,12 +314,14 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
       Layer.provide(SqlitePersistenceMemory),
     );
+    const usageLimitsRepositoryLayer = makeUsageLimitsRepositoryLayer();
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = makeProviderServiceLive().pipe(
       Layer.provide(providerAdapterLayer),
       Layer.provide(directoryLayer),
       Layer.provide(serverSettingsLayer),
       Layer.provide(AnalyticsService.layerTest),
+      Layer.provideMerge(usageLimitsRepositoryLayer),
     );
 
     const failure = yield* Effect.flip(
@@ -350,6 +360,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
       Layer.provide(persistenceLayer),
     );
+    const usageLimitsRepositoryLayer = makeUsageLimitsRepositoryLayer(persistenceLayer);
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
 
     yield* Effect.gen(function* () {
@@ -365,6 +376,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
       Layer.provide(AnalyticsService.layerTest),
+      Layer.provideMerge(usageLimitsRepositoryLayer),
     );
 
     yield* Effect.gen(function* () {
@@ -407,6 +419,7 @@ it.effect(
       const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
         Layer.provide(persistenceLayer),
       );
+      const usageLimitsRepositoryLayer = makeUsageLimitsRepositoryLayer(persistenceLayer);
 
       const firstCodex = makeFakeCodexAdapter();
       const firstRegistry: typeof ProviderAdapterRegistry.Service = {
@@ -425,6 +438,7 @@ it.effect(
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
+        Layer.provideMerge(usageLimitsRepositoryLayer),
       );
       const updatedResumeCursor = {
         threadId: asThreadId("thread-1"),
@@ -477,6 +491,7 @@ it.effect(
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
+        Layer.provideMerge(usageLimitsRepositoryLayer),
       );
 
       secondCodex.startSession.mockClear();
@@ -821,6 +836,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
         Layer.provide(persistenceLayer),
       );
+      const usageLimitsRepositoryLayer = makeUsageLimitsRepositoryLayer(persistenceLayer);
 
       const firstClaude = makeFakeCodexAdapter("claudeAgent");
       const firstRegistry: typeof ProviderAdapterRegistry.Service = {
@@ -838,6 +854,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
+        Layer.provideMerge(usageLimitsRepositoryLayer),
       );
 
       const initial = yield* Effect.gen(function* () {
@@ -871,6 +888,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
+        Layer.provideMerge(usageLimitsRepositoryLayer),
       );
 
       secondClaude.startSession.mockClear();
@@ -944,6 +962,71 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         true,
       );
     }),
+  );
+
+  it.effect(
+    "persists normalized usage limits from runtime account.rate-limits.updated events",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const repository = yield* ProviderUsageLimitsRepository;
+        const session = yield* provider.startSession(asThreadId("thread-usage-limits"), {
+          provider: "codex",
+          threadId: asThreadId("thread-usage-limits"),
+          runtimeMode: "full-access",
+        });
+
+        fanout.codex.emit({
+          type: "account.rate-limits.updated",
+          eventId: asEventId("evt-rate-limits-1"),
+          provider: "codex",
+          createdAt: "2026-04-04T00:00:00.000Z",
+          threadId: session.threadId,
+          payload: {
+            rateLimits: {
+              primary: {
+                usedPercent: 42.4,
+                windowDurationMins: 300,
+                resetsAt: 1_775_318_400,
+              },
+              secondary: {
+                usedPercent: 15,
+                windowDurationMins: 10_080,
+                resetsAt: 1_775_836_800,
+              },
+            },
+          },
+        });
+
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const stored = yield* repository.getByProvider({ provider: "codex" });
+          if (Option.isSome(stored)) {
+            assert.deepEqual(stored.value.usageLimits, {
+              updatedAt: "2026-04-04T00:00:00.000Z",
+              windows: [
+                {
+                  kind: "session",
+                  label: "Session limit",
+                  usedPercentage: 42,
+                  resetsAt: "2026-04-04T16:00:00.000Z",
+                  windowDurationMins: 300,
+                },
+                {
+                  kind: "weekly",
+                  label: "Weekly limit",
+                  usedPercentage: 15,
+                  resetsAt: "2026-04-10T16:00:00.000Z",
+                  windowDurationMins: 10_080,
+                },
+              ],
+            });
+            return;
+          }
+          yield* sleep(10);
+        }
+
+        assert.fail("Timed out waiting for persisted usage limits");
+      }),
   );
 
   it.effect("fans out canonical runtime events in emission order", () =>

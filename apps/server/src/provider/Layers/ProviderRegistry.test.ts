@@ -1,5 +1,10 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
+import { expect } from "vitest";
 import {
   Effect,
   Exit,
@@ -33,10 +38,19 @@ import { checkClaudeProviderStatus, parseClaudeAuthStatusFromOutput } from "./Cl
 import { haveProvidersChanged, ProviderRegistryLive } from "./ProviderRegistry";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings";
 import { ProviderRegistry } from "../Services/ProviderRegistry";
+import { ProviderUsageLimitsRepositoryLive } from "../../persistence/Layers/ProviderUsageLimits.ts";
+import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../../persistence/Layers/Sqlite.ts";
 
 // ── Test helpers ────────────────────────────────────────────────────
 
 const encoder = new TextEncoder();
+const usageLimitsRepositoryLayer = ProviderUsageLimitsRepositoryLive.pipe(
+  Layer.provide(SqlitePersistenceMemory),
+);
 
 function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   return ChildProcessSpawner.makeHandle({
@@ -205,6 +219,107 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
           assert.deepStrictEqual(
             status.models.some((model) => model.slug === "gpt-5.3-codex-spark"),
             true,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
+              if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes weekly-only codex usage limits in the provider snapshot", () =>
+        Effect.gen(function* () {
+          yield* withTempCodexHome();
+          const status = yield* checkCodexProviderStatus(() =>
+            Effect.succeed({
+              snapshot: {
+                type: "chatgpt" as const,
+                planType: "free" as const,
+                sparkEnabled: false,
+              },
+              account: null,
+              rateLimits: null,
+              usageLimits: {
+                updatedAt: "2026-04-04T00:00:00.000Z",
+                windows: [
+                  {
+                    kind: "weekly",
+                    label: "Weekly limit",
+                    usedPercentage: 23,
+                    resetsAt: "2026-04-08T00:00:00.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            }),
+          );
+
+          assert.deepStrictEqual(status.usageLimits, {
+            updatedAt: "2026-04-04T00:00:00.000Z",
+            windows: [
+              {
+                kind: "weekly",
+                label: "Weekly limit",
+                usedPercentage: 23,
+                resetsAt: "2026-04-08T00:00:00.000Z",
+                windowDurationMins: 10_080,
+              },
+            ],
+          });
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
+              if (joined === "login status") return { stdout: "Logged in\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes session and weekly codex usage limits in the provider snapshot", () =>
+        Effect.gen(function* () {
+          yield* withTempCodexHome();
+          const status = yield* checkCodexProviderStatus(() =>
+            Effect.succeed({
+              snapshot: {
+                type: "chatgpt" as const,
+                planType: "pro" as const,
+                sparkEnabled: true,
+              },
+              account: null,
+              rateLimits: null,
+              usageLimits: {
+                updatedAt: "2026-04-04T00:00:00.000Z",
+                windows: [
+                  {
+                    kind: "session",
+                    label: "Session limit",
+                    usedPercentage: 68,
+                    resetsAt: "2026-04-04T05:00:00.000Z",
+                    windowDurationMins: 300,
+                  },
+                  {
+                    kind: "weekly",
+                    label: "Weekly limit",
+                    usedPercentage: 29,
+                    resetsAt: "2026-04-08T00:00:00.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            }),
+          );
+
+          assert.deepStrictEqual(
+            status.usageLimits?.windows.map((window) => window.kind),
+            ["session", "weekly"],
           );
         }).pipe(
           Effect.provide(
@@ -534,10 +649,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
                 throw new Error(`Unexpected args: ${joined}`);
               }),
             ),
+            Layer.provideMerge(usageLimitsRepositoryLayer),
           );
           const runtimeServices = yield* Layer.build(
             Layer.mergeAll(
               Layer.succeed(ServerSettingsService, serverSettings),
+              usageLimitsRepositoryLayer,
               providerRegistryLayer,
             ),
           ).pipe(Scope.provide(scope));
@@ -572,6 +689,249 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
               updated.find((status) => status.provider === "codex")?.status,
               "error",
             );
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("hydrates cached Claude usage limits into the first provider snapshot", () =>
+        Effect.gen(function* () {
+          const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-registry-cache-"));
+          const dbPath = path.join(tempDir, "state.sqlite");
+          const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+          const persistedUsageLimitsLayer = ProviderUsageLimitsRepositoryLive.pipe(
+            Layer.provide(persistenceLayer),
+          );
+
+          yield* Effect.gen(function* () {
+            const repository = yield* ProviderUsageLimitsRepository;
+            yield* repository.upsert({
+              provider: "claudeAgent",
+              usageLimits: {
+                updatedAt: "2026-04-04T00:00:00.000Z",
+                windows: [
+                  {
+                    kind: "weekly",
+                    label: "Weekly limit",
+                    usedPercentage: 28,
+                    resetsAt: "2026-04-05T00:00:00.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            });
+          }).pipe(Effect.provide(persistedUsageLimitsLayer));
+
+          const providerRegistryLayer = ProviderRegistryLive.pipe(
+            Layer.provideMerge(
+              mockCommandSpawnerLayer((command, args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") {
+                  return {
+                    stdout: command === "codex" ? "codex 1.0.0\n" : "claude 1.0.0\n",
+                    stderr: "",
+                    code: 0,
+                  };
+                }
+                if (joined === "login status" || joined === "auth status") {
+                  return { stdout: "Logged in\n", stderr: "", code: 0 };
+                }
+                throw new Error(`Unexpected args: ${command} ${joined}`);
+              }),
+            ),
+            Layer.provideMerge(persistedUsageLimitsLayer),
+          );
+
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const serverSettings = yield* makeMutableServerSettingsService();
+          const runtimeServices = yield* Layer.build(
+            providerRegistryLayer.pipe(
+              Layer.provide(Layer.succeed(ServerSettingsService, serverSettings)),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          const providers = yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry;
+            return yield* registry.getProviders;
+          }).pipe(Effect.provide(runtimeServices));
+
+          expect(
+            providers.find((provider) => provider.provider === "claudeAgent")?.usageLimits,
+          ).toEqual({
+            updatedAt: "2026-04-04T00:00:00.000Z",
+            windows: [
+              {
+                kind: "weekly",
+                label: "Weekly limit",
+                usedPercentage: 28,
+                resetsAt: "2026-04-05T00:00:00.000Z",
+                windowDurationMins: 10_080,
+              },
+            ],
+          });
+
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }),
+      );
+
+      it.effect(
+        "restores persisted Claude usage limits after restart into the first provider snapshot",
+        () =>
+          Effect.gen(function* () {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-registry-"));
+            const dbPath = path.join(tempDir, "state.sqlite");
+            const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+            const persistedUsageLimitsLayer = ProviderUsageLimitsRepositoryLive.pipe(
+              Layer.provide(persistenceLayer),
+            );
+
+            yield* Effect.gen(function* () {
+              const repository = yield* ProviderUsageLimitsRepository;
+              yield* repository.upsert({
+                provider: "claudeAgent",
+                usageLimits: {
+                  updatedAt: "2026-04-04T00:00:00.000Z",
+                  windows: [
+                    {
+                      kind: "weekly",
+                      label: "Weekly limit",
+                      usedPercentage: 19,
+                      resetsAt: "2026-04-06T00:00:00.000Z",
+                      windowDurationMins: 10_080,
+                    },
+                  ],
+                },
+              });
+            }).pipe(Effect.provide(persistedUsageLimitsLayer));
+
+            const providerRegistryLayer = ProviderRegistryLive.pipe(
+              Layer.provideMerge(
+                mockCommandSpawnerLayer((command, args) => {
+                  const joined = args.join(" ");
+                  if (joined === "--version") {
+                    return {
+                      stdout: command === "codex" ? "codex 1.0.0\n" : "claude 1.0.0\n",
+                      stderr: "",
+                      code: 0,
+                    };
+                  }
+                  if (joined === "login status" || joined === "auth status") {
+                    return { stdout: "Logged in\n", stderr: "", code: 0 };
+                  }
+                  throw new Error(`Unexpected args: ${command} ${joined}`);
+                }),
+              ),
+              Layer.provideMerge(persistedUsageLimitsLayer),
+            );
+
+            const providers = yield* Effect.gen(function* () {
+              const registry = yield* ProviderRegistry;
+              return yield* registry.getProviders;
+            }).pipe(Effect.provide(providerRegistryLayer));
+
+            expect(
+              providers.find((provider) => provider.provider === "claudeAgent")?.usageLimits,
+            ).toEqual({
+              updatedAt: "2026-04-04T00:00:00.000Z",
+              windows: [
+                {
+                  kind: "weekly",
+                  label: "Weekly limit",
+                  usedPercentage: 19,
+                  resetsAt: "2026-04-06T00:00:00.000Z",
+                  windowDurationMins: 10_080,
+                },
+              ],
+            });
+
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          }),
+      );
+
+      it.effect("publishes provider-status updates when usage-limit cache changes", () =>
+        Effect.gen(function* () {
+          const providerRegistryLayer = ProviderRegistryLive.pipe(
+            Layer.provideMerge(
+              mockCommandSpawnerLayer((command, args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") {
+                  return {
+                    stdout: command === "codex" ? "codex 1.0.0\n" : "claude 1.0.0\n",
+                    stderr: "",
+                    code: 0,
+                  };
+                }
+                if (joined === "login status" || joined === "auth status") {
+                  return { stdout: "Logged in\n", stderr: "", code: 0 };
+                }
+                throw new Error(`Unexpected args: ${command} ${joined}`);
+              }),
+            ),
+          );
+
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const serverSettings = yield* makeMutableServerSettingsService();
+          const runtimeServices = yield* Layer.build(
+            Layer.mergeAll(
+              providerRegistryLayer.pipe(
+                Layer.provide(Layer.succeed(ServerSettingsService, serverSettings)),
+                Layer.provideMerge(usageLimitsRepositoryLayer),
+              ),
+              usageLimitsRepositoryLayer,
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry;
+            const repository = yield* ProviderUsageLimitsRepository;
+            const publishedRef = yield* Ref.make<ReadonlyArray<ServerProvider> | null>(null);
+
+            yield* registry.getProviders;
+            yield* Stream.take(registry.streamChanges, 1).pipe(
+              Stream.runForEach((providers) => Ref.set(publishedRef, providers)),
+              Effect.forkScoped,
+            );
+
+            yield* repository.upsert({
+              provider: "claudeAgent",
+              usageLimits: {
+                updatedAt: "2026-04-04T00:00:00.000Z",
+                windows: [
+                  {
+                    kind: "weekly",
+                    label: "Weekly limit",
+                    usedPercentage: 11,
+                    resetsAt: "2026-04-07T00:00:00.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            });
+
+            for (let attempt = 0; attempt < 50; attempt += 1) {
+              const published = yield* Ref.get(publishedRef);
+              if (published) {
+                expect(
+                  published.find((provider) => provider.provider === "claudeAgent")?.usageLimits,
+                ).toEqual({
+                  updatedAt: "2026-04-04T00:00:00.000Z",
+                  windows: [
+                    {
+                      kind: "weekly",
+                      label: "Weekly limit",
+                      usedPercentage: 11,
+                      resetsAt: "2026-04-07T00:00:00.000Z",
+                      windowDurationMins: 10_080,
+                    },
+                  ],
+                });
+                return;
+              }
+              yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+            }
+
+            assert.fail("Timed out waiting for provider-status update after usage-limit change");
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
@@ -867,6 +1227,53 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
           assert.strictEqual(status.auth.status, "authenticated");
           assert.strictEqual(status.auth.type, "maxplan");
           assert.strictEqual(status.auth.label, "Claude Max Subscription");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return {
+                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                  stderr: "",
+                  code: 0,
+                };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes cached Claude usage limits in the provider snapshot", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            () => Effect.succeed("maxplan"),
+            () =>
+              Effect.succeed({
+                updatedAt: "2026-04-04T00:00:00.000Z",
+                windows: [
+                  {
+                    kind: "weekly",
+                    label: "Weekly limit",
+                    usedPercentage: 31,
+                    resetsAt: "2026-04-05T00:00:00.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              }),
+          );
+          assert.deepStrictEqual(status.usageLimits, {
+            updatedAt: "2026-04-04T00:00:00.000Z",
+            windows: [
+              {
+                kind: "weekly",
+                label: "Weekly limit",
+                usedPercentage: 31,
+                resetsAt: "2026-04-05T00:00:00.000Z",
+                windowDurationMins: 10_080,
+              },
+            ],
+          });
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {

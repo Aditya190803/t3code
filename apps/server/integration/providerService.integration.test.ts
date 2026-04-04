@@ -17,6 +17,7 @@ import { ServerSettingsService } from "../src/serverSettings.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
+import { ProviderUsageLimitsRepositoryLive } from "../src/persistence/Layers/ProviderUsageLimits.ts";
 
 import {
   makeTestProviderAdapterHarness,
@@ -58,9 +59,13 @@ const makeIntegrationFixture = Effect.gen(function* () {
   const directoryLayer = ProviderSessionDirectoryLive.pipe(
     Layer.provide(ProviderSessionRuntimeRepositoryLive),
   );
+  const usageLimitsRepositoryLayer = ProviderUsageLimitsRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
 
   const shared = Layer.mergeAll(
     directoryLayer,
+    usageLimitsRepositoryLayer,
     Layer.succeed(ProviderAdapterRegistry, registry),
     ServerSettingsService.layerTest(DEFAULT_SERVER_SETTINGS),
     AnalyticsService.layerTest,

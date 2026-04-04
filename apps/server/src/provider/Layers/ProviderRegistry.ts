@@ -13,6 +13,7 @@ import { ClaudeProvider } from "../Services/ClaudeProvider";
 import type { CodexProviderShape } from "../Services/CodexProvider";
 import { CodexProvider } from "../Services/CodexProvider";
 import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry";
+import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
 
 const loadProviders = (
   codexProvider: CodexProviderShape,
@@ -32,6 +33,7 @@ export const ProviderRegistryLive = Layer.effect(
   Effect.gen(function* () {
     const codexProvider = yield* CodexProvider;
     const claudeProvider = yield* ClaudeProvider;
+    const usageLimitsRepository = yield* ProviderUsageLimitsRepository;
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
       PubSub.shutdown,
@@ -54,13 +56,6 @@ export const ProviderRegistryLive = Layer.effect(
       return providers;
     });
 
-    yield* Stream.runForEach(codexProvider.streamChanges, () => syncProviders()).pipe(
-      Effect.forkScoped,
-    );
-    yield* Stream.runForEach(claudeProvider.streamChanges, () => syncProviders()).pipe(
-      Effect.forkScoped,
-    );
-
     const refresh = Effect.fn("refresh")(function* (provider?: ProviderKind) {
       switch (provider) {
         case "codex":
@@ -77,6 +72,16 @@ export const ProviderRegistryLive = Layer.effect(
       }
       return yield* syncProviders();
     });
+
+    yield* Stream.runForEach(codexProvider.streamChanges, () => syncProviders()).pipe(
+      Effect.forkScoped,
+    );
+    yield* Stream.runForEach(claudeProvider.streamChanges, () => syncProviders()).pipe(
+      Effect.forkScoped,
+    );
+    yield* Stream.runForEach(usageLimitsRepository.streamChanges, (change) =>
+      refresh(change.provider).pipe(Effect.ignoreCause({ log: true })),
+    ).pipe(Effect.forkScoped);
 
     return {
       getProviders: syncProviders({ publish: false }).pipe(

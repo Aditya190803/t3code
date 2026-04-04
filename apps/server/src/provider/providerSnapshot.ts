@@ -1,6 +1,7 @@
 import type {
   ServerProvider,
   ServerProviderAuth,
+  ServerProviderUsageLimits,
   ServerProviderModel,
   ServerProviderState,
 } from "@t3tools/contracts";
@@ -130,6 +131,7 @@ export function buildServerProvider(input: {
   checkedAt: string;
   models: ReadonlyArray<ServerProviderModel>;
   probe: ProviderProbeResult;
+  usageLimits?: ServerProviderUsageLimits;
 }): ServerProvider {
   return {
     provider: input.provider,
@@ -141,6 +143,7 @@ export function buildServerProvider(input: {
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
     models: input.models,
+    ...(input.usageLimits ? { usageLimits: input.usageLimits } : {}),
   };
 }
 

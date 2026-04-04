@@ -44,6 +44,8 @@ import {
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
+import { normalizeClaudeUsageLimits, normalizeCodexUsageLimits } from "../providerUsageLimits.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
@@ -156,6 +158,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  const usageLimitsRepository = yield* ProviderUsageLimitsRepository;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -188,11 +191,44 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const providers = yield* registry.listProviders();
   const adapters = yield* Effect.forEach(providers, (provider) => registry.getByProvider(provider));
+  const persistUsageLimitEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> => {
+    if (event.type !== "account.rate-limits.updated") {
+      return Effect.void;
+    }
+
+    const usageLimits =
+      event.provider === "codex"
+        ? normalizeCodexUsageLimits(event.payload.rateLimits, event.createdAt)
+        : event.provider === "claudeAgent"
+          ? normalizeClaudeUsageLimits(event.payload.rateLimits, event.createdAt)
+          : undefined;
+
+    if (!usageLimits) {
+      return Effect.void;
+    }
+
+    return usageLimitsRepository
+      .upsert({
+        provider: event.provider,
+        usageLimits,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logDebug("failed to persist provider usage limits", {
+            cause,
+            provider: event.provider,
+          }),
+        ),
+      );
+  };
   const processRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     increment(providerRuntimeEventsTotal, {
       provider: event.provider,
       eventType: event.type,
-    }).pipe(Effect.andThen(publishRuntimeEvent(event)));
+    }).pipe(
+      Effect.andThen(persistUsageLimitEvent(event)),
+      Effect.andThen(publishRuntimeEvent(event)),
+    );
 
   const worker = Effect.forever(
     Queue.take(runtimeEventQueue).pipe(Effect.flatMap(processRuntimeEvent)),

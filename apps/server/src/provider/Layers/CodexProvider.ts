@@ -6,6 +6,7 @@ import type {
   ServerProviderModel,
   ServerProviderAuth,
   ServerProviderState,
+  ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import {
   Cache,
@@ -44,10 +45,15 @@ import {
   codexAuthSubType,
   type CodexAccountSnapshot,
 } from "../codexAccount";
-import { probeCodexAccount } from "../codexAppServer";
+import { probeCodexAccountState, type CodexAccountState } from "../codexAppServer";
 import { CodexProvider } from "../Services/CodexProvider";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSettingsError } from "@t3tools/contracts";
+import {
+  normalizeCodexUsageLimits,
+  readPersistedProviderUsageLimits,
+} from "../providerUsageLimits";
+import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
 
 const PROVIDER = "codex" as const;
 const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
@@ -297,14 +303,29 @@ const probeCodexCapabilities = (input: {
   readonly binaryPath: string;
   readonly homePath?: string;
 }) =>
-  Effect.tryPromise((signal) => probeCodexAccount({ ...input, signal })).pipe(
+  Effect.tryPromise((signal) => probeCodexAccountState({ ...input, signal })).pipe(
     Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
     Effect.result,
     Effect.map((result) => {
       if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
+      if (Option.isNone(result.success)) return undefined;
+      const state = result.success.value;
+      return {
+        ...state,
+        usageLimits: normalizeCodexUsageLimits(state.rateLimits, new Date().toISOString()),
+      };
     }),
   );
+
+type ResolvedCodexAccount =
+  | CodexAccountSnapshot
+  | (CodexAccountState & { readonly usageLimits: ServerProviderUsageLimits | undefined });
+
+function isResolvedCodexAccountState(
+  value: ResolvedCodexAccount | undefined,
+): value is CodexAccountState & { readonly usageLimits: ServerProviderUsageLimits | undefined } {
+  return typeof value === "object" && value !== null && "snapshot" in value;
+}
 
 const runCodexCommand = Effect.fn("runCodexCommand")(function* (args: ReadonlyArray<string>) {
   const settingsService = yield* ServerSettingsService;
@@ -325,7 +346,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   resolveAccount?: (input: {
     readonly binaryPath: string;
     readonly homePath?: string;
-  }) => Effect.Effect<CodexAccountSnapshot | undefined>,
+  }) => Effect.Effect<ResolvedCodexAccount | undefined>,
+  resolveCachedUsageLimits?: () => Effect.Effect<ServerProviderUsageLimits | undefined>,
 ): Effect.fn.Return<
   ServerProvider,
   ServerSettingsError,
@@ -340,13 +362,32 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   );
   const checkedAt = new Date().toISOString();
   const models = providerModelsFromSettings(BUILT_IN_MODELS, PROVIDER, codexSettings.customModels);
+  const cachedUsageLimits = resolveCachedUsageLimits
+    ? yield* resolveCachedUsageLimits()
+    : undefined;
+
+  const buildProviderSnapshot = (input: {
+    readonly probe: {
+      installed: boolean;
+      version: string | null;
+      status: Exclude<ServerProviderState, "disabled">;
+      auth: ServerProviderAuth;
+      message?: string;
+    };
+    readonly models?: ReadonlyArray<ServerProviderModel>;
+    readonly usageLimits?: ServerProviderUsageLimits;
+  }) =>
+    buildServerProvider({
+      provider: PROVIDER,
+      enabled: codexSettings.enabled,
+      checkedAt,
+      models: input.models ?? models,
+      probe: input.probe,
+      ...(input.usageLimits ? { usageLimits: input.usageLimits } : {}),
+    });
 
   if (!codexSettings.enabled) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: false,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: false,
         version: null,
@@ -354,6 +395,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: "Codex is disabled in T3 Code settings.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
@@ -364,11 +406,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: !isCommandMissingCause(error),
         version: null,
@@ -378,15 +416,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
           ? "Codex CLI (`codex`) is not installed or not on PATH."
           : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   if (Option.isNone(versionProbe.success)) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: true,
         version: null,
@@ -394,6 +429,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: "Codex CLI is installed but failed to run. Timed out while running command.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
@@ -403,11 +439,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
   if (version.code !== 0) {
     const detail = detailFromResult(version);
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: true,
         version: parsedVersion,
@@ -417,15 +449,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
           ? `Codex CLI is installed but failed to run. ${detail}`
           : "Codex CLI is installed but failed to run.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   if (parsedVersion && !isCodexCliVersionSupported(parsedVersion)) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: true,
         version: parsedVersion,
@@ -433,15 +462,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: formatCodexCliUpgradeMessage(parsedVersion),
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   if (yield* hasCustomModelProvider) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
-      models,
+    return buildProviderSnapshot({
       probe: {
         installed: true,
         version: parsedVersion,
@@ -449,6 +475,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: "Using a custom Codex model provider; OpenAI login check skipped.",
       },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
@@ -462,14 +489,15 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         homePath: codexSettings.homePath,
       })
     : undefined;
-  const resolvedModels = adjustCodexModelsForAccount(models, account);
+  const accountSnapshot = isResolvedCodexAccountState(account) ? account.snapshot : account;
+  const resolvedModels = adjustCodexModelsForAccount(models, accountSnapshot);
+  const usageLimits = isResolvedCodexAccountState(account)
+    ? (account.usageLimits ?? cachedUsageLimits)
+    : cachedUsageLimits;
 
   if (Result.isFailure(authProbe)) {
     const error = authProbe.failure;
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
+    return buildProviderSnapshot({
       models: resolvedModels,
       probe: {
         installed: true,
@@ -481,14 +509,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
             ? `Could not verify Codex authentication status: ${error.message}.`
             : "Could not verify Codex authentication status.",
       },
+      ...(usageLimits ? { usageLimits } : {}),
     });
   }
 
   if (Option.isNone(authProbe.success)) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: codexSettings.enabled,
-      checkedAt,
+    return buildProviderSnapshot({
       models: resolvedModels,
       probe: {
         installed: true,
@@ -497,16 +523,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: "Could not verify Codex authentication status. Timed out while running command.",
       },
+      ...(usageLimits ? { usageLimits } : {}),
     });
   }
 
   const parsed = parseAuthStatusFromOutput(authProbe.success.value);
-  const authType = codexAuthSubType(account);
-  const authLabel = codexAuthSubLabel(account);
-  return buildServerProvider({
-    provider: PROVIDER,
-    enabled: codexSettings.enabled,
-    checkedAt,
+  const authType = codexAuthSubType(accountSnapshot);
+  const authLabel = codexAuthSubLabel(accountSnapshot);
+  return buildProviderSnapshot({
     models: resolvedModels,
     probe: {
       installed: true,
@@ -519,6 +543,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       },
       ...(parsed.message ? { message: parsed.message } : {}),
     },
+    ...(usageLimits ? { usageLimits } : {}),
   });
 });
 
@@ -529,6 +554,7 @@ export const CodexProviderLive = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const usageLimitsRepository = yield* ProviderUsageLimitsRepository;
     const accountProbeCache = yield* Cache.make({
       capacity: 4,
       timeToLive: Duration.minutes(5),
@@ -541,13 +567,30 @@ export const CodexProviderLive = Layer.effect(
       },
     });
 
-    const checkProvider = checkCodexProviderStatus((input) =>
-      Cache.get(accountProbeCache, JSON.stringify([input.binaryPath, input.homePath])),
+    const checkProvider = checkCodexProviderStatus(
+      (input) =>
+        Cache.get(accountProbeCache, JSON.stringify([input.binaryPath, input.homePath])).pipe(
+          Effect.tap((state) =>
+            state?.usageLimits
+              ? usageLimitsRepository
+                  .upsert({
+                    provider: PROVIDER,
+                    usageLimits: state.usageLimits,
+                  })
+                  .pipe(Effect.catchCause(() => Effect.void))
+              : Effect.void,
+          ),
+        ),
+      () =>
+        readPersistedProviderUsageLimits(PROVIDER, usageLimitsRepository).pipe(
+          Effect.orElseSucceed(() => undefined),
+        ),
     ).pipe(
       Effect.provideService(ServerSettingsService, serverSettings),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(ProviderUsageLimitsRepository, usageLimitsRepository),
     );
 
     return yield* makeManagedServerProvider<CodexSettings>({

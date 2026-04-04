@@ -12,6 +12,7 @@ import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime";
+import { ProviderUsageLimitsRepositoryLive } from "./persistence/Layers/ProviderUsageLimits";
 import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter";
 import { makeClaudeAdapterLive } from "./provider/Layers/ClaudeAdapter";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
@@ -154,7 +155,10 @@ const ProviderLayerLive = Layer.unwrap(
   }),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+const PersistenceLayerLive = Layer.mergeAll(
+  SqlitePersistenceLayerLive,
+  ProviderUsageLimitsRepositoryLive.pipe(Layer.provide(SqlitePersistenceLayerLive)),
+);
 
 const GitLayerLive = Layer.empty.pipe(
   Layer.provideMerge(
@@ -183,12 +187,12 @@ const RuntimeDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(GitLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive),
-  Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(TerminalLayerLive),
+  Layer.provideMerge(OrchestrationLayerLive.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(PersistenceLayerLive),
+  Layer.provideMerge(ProviderLayerLive.pipe(Layer.provide(PersistenceLayerLive))),
+  Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(KeybindingsLive),
-  Layer.provideMerge(ProviderRegistryLive),
+  Layer.provideMerge(ProviderRegistryLive.pipe(Layer.provide(PersistenceLayerLive))),
   Layer.provideMerge(ServerSettingsLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
