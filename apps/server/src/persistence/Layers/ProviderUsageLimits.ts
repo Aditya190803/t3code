@@ -46,7 +46,7 @@ const makeProviderUsageLimitsRepository = Effect.gen(function* () {
         VALUES (
           ${row.provider},
           ${row.updatedAt},
-          ${JSON.stringify(row.usageLimits)}
+          ${row.usageLimits}
         )
         ON CONFLICT (provider_name)
         DO UPDATE SET
