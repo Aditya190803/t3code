@@ -247,26 +247,35 @@ function ProviderUsageLimitsSection({
   }
 
   return (
-    <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+    <div className="px-4 pb-4 sm:px-5">
       <div className="space-y-3">
         {windows.map((window) => {
           const remainingPercentage = Math.max(0, 100 - window.usedPercentage);
 
           return (
             <div key={`${window.kind}:${window.resetsAt}`} className="space-y-1.5">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="font-medium text-foreground">{window.label}</span>
-                <span className="text-muted-foreground">{remainingPercentage}% remaining</span>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-foreground">{window.label}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {remainingPercentage}% remaining
+                </span>
               </div>
-              <div className="h-2 overflow-hidden rounded-full bg-muted/80">
+              <div
+                className="h-1.5 overflow-hidden rounded-full bg-muted"
+                role="progressbar"
+                aria-label={window.label}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={window.usedPercentage}
+              >
                 <div
-                  className="h-full rounded-full bg-foreground/75 transition-[width] duration-300"
+                  className="h-full rounded-full bg-foreground/80 transition-[width]"
                   style={{ width: `${window.usedPercentage}%` }}
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground">
+              <div className="text-[11px] text-muted-foreground">
                 Resets {formatUsageLimitResetLabel(window.resetsAt, timestampFormat)}
-              </p>
+              </div>
             </div>
           );
         })}
