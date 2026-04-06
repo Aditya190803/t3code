@@ -55,6 +55,19 @@ import {
 } from "../providerUsageLimits";
 import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
 
+const DEFAULT_CODEX_MODEL_CAPABILITIES: ModelCapabilities = {
+  reasoningEffortLevels: [
+    { value: "xhigh", label: "Extra High" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ],
+  supportsFastMode: true,
+  supportsThinkingToggle: false,
+  contextWindowOptions: [],
+  promptInjectedEffortLevels: [],
+};
+
 const PROVIDER = "codex" as const;
 const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
@@ -165,13 +178,8 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
 export function getCodexModelCapabilities(model: string | null | undefined): ModelCapabilities {
   const slug = model?.trim();
   return (
-    BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ?? {
-      reasoningEffortLevels: [],
-      supportsFastMode: false,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    }
+    BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ??
+    DEFAULT_CODEX_MODEL_CAPABILITIES
   );
 }
 
@@ -361,7 +369,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     Effect.map((settings) => settings.providers.codex),
   );
   const checkedAt = new Date().toISOString();
-  const models = providerModelsFromSettings(BUILT_IN_MODELS, PROVIDER, codexSettings.customModels);
+  const models = providerModelsFromSettings(
+    BUILT_IN_MODELS,
+    PROVIDER,
+    codexSettings.customModels,
+    DEFAULT_CODEX_MODEL_CAPABILITIES,
+  );
   const cachedUsageLimits = resolveCachedUsageLimits
     ? yield* resolveCachedUsageLimits()
     : undefined;
