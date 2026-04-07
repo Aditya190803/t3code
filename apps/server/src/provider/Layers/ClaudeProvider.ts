@@ -1,16 +1,26 @@
+import * as OS from "node:os";
 import type {
-  ClaudeSettings,
   ModelCapabilities,
+  CodexSettings,
   ServerProvider,
   ServerProviderModel,
   ServerProviderAuth,
   ServerProviderState,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import { Cache, Duration, Effect, Equal, Layer, Option, Result, Schema, Stream } from "effect";
+import {
+  Cache,
+  Duration,
+  Effect,
+  Equal,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Result,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { decodeJsonResult } from "@t3tools/shared/schemaJson";
-import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
 
 import {
   buildServerProvider,
@@ -24,86 +34,156 @@ import {
   type CommandResult,
 } from "../providerSnapshot";
 import { makeManagedServerProvider } from "../makeManagedServerProvider";
-import { ClaudeProvider } from "../Services/ClaudeProvider";
+import {
+  formatCodexCliUpgradeMessage,
+  isCodexCliVersionSupported,
+  parseCodexCliVersion,
+} from "../codexCliVersion";
+import {
+  adjustCodexModelsForAccount,
+  codexAuthSubLabel,
+  codexAuthSubType,
+  type CodexAccountSnapshot,
+} from "../codexAccount";
+import { probeCodexAccountState, type CodexAccountState } from "../codexAppServer";
+import { CodexProvider } from "../Services/CodexProvider";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSettingsError } from "@t3tools/contracts";
-import { readPersistedProviderUsageLimits } from "../providerUsageLimits";
+import {
+  normalizeCodexUsageLimits,
+  readPersistedProviderUsageLimits,
+} from "../providerUsageLimits";
 import { ProviderUsageLimitsRepository } from "../../persistence/Services/ProviderUsageLimits.ts";
 
-const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = {
-  reasoningEffortLevels: [],
-  supportsFastMode: false,
+const DEFAULT_CODEX_MODEL_CAPABILITIES: ModelCapabilities = {
+  reasoningEffortLevels: [
+    { value: "xhigh", label: "Extra High" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ],
+  supportsFastMode: true,
   supportsThinkingToggle: false,
   contextWindowOptions: [],
   promptInjectedEffortLevels: [],
 };
 
-const PROVIDER = "claudeAgent" as const;
+const PROVIDER = "codex" as const;
+const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
-    slug: "claude-opus-4-6",
-    name: "Claude Opus 4.6",
+    slug: "gpt-5.4",
+    name: "GPT-5.4",
     isCustom: false,
     capabilities: {
       reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
+        { value: "xhigh", label: "Extra High" },
         { value: "high", label: "High", isDefault: true },
-        { value: "max", label: "Max" },
-        { value: "ultrathink", label: "Ultrathink" },
+        { value: "medium", label: "Medium" },
+        { value: "low", label: "Low" },
       ],
       supportsFastMode: true,
       supportsThinkingToggle: false,
-      contextWindowOptions: [
-        { value: "200k", label: "200k", isDefault: true },
-        { value: "1m", label: "1M" },
-      ],
-      promptInjectedEffortLevels: ["ultrathink"],
-    } satisfies ModelCapabilities,
+      contextWindowOptions: [],
+      promptInjectedEffortLevels: [],
+    },
   },
   {
-    slug: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6",
+    slug: "gpt-5.4-mini",
+    name: "GPT-5.4 Mini",
     isCustom: false,
     capabilities: {
       reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
+        { value: "xhigh", label: "Extra High" },
         { value: "high", label: "High", isDefault: true },
-        { value: "ultrathink", label: "Ultrathink" },
+        { value: "medium", label: "Medium" },
+        { value: "low", label: "Low" },
       ],
-      supportsFastMode: false,
+      supportsFastMode: true,
       supportsThinkingToggle: false,
-      contextWindowOptions: [
-        { value: "200k", label: "200k", isDefault: true },
-        { value: "1m", label: "1M" },
-      ],
-      promptInjectedEffortLevels: ["ultrathink"],
-    } satisfies ModelCapabilities,
-  },
-  {
-    slug: "claude-haiku-4-5",
-    name: "Claude Haiku 4.5",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [],
-      supportsFastMode: false,
-      supportsThinkingToggle: true,
       contextWindowOptions: [],
       promptInjectedEffortLevels: [],
-    } satisfies ModelCapabilities,
+    },
+  },
+  {
+    slug: "gpt-5.3-codex",
+    name: "GPT-5.3 Codex",
+    isCustom: false,
+    capabilities: {
+      reasoningEffortLevels: [
+        { value: "xhigh", label: "Extra High" },
+        { value: "high", label: "High", isDefault: true },
+        { value: "medium", label: "Medium" },
+        { value: "low", label: "Low" },
+      ],
+      supportsFastMode: true,
+      supportsThinkingToggle: false,
+      contextWindowOptions: [],
+      promptInjectedEffortLevels: [],
+    },
+  },
+  {
+    slug: "gpt-5.3-codex-spark",
+    name: "GPT-5.3 Codex Spark",
+    isCustom: false,
+    capabilities: {
+      reasoningEffortLevels: [
+        { value: "xhigh", label: "Extra High" },
+        { value: "high", label: "High", isDefault: true },
+        { value: "medium", label: "Medium" },
+        { value: "low", label: "Low" },
+      ],
+      supportsFastMode: true,
+      supportsThinkingToggle: false,
+      contextWindowOptions: [],
+      promptInjectedEffortLevels: [],
+    },
+  },
+  {
+    slug: "gpt-5.2-codex",
+    name: "GPT-5.2 Codex",
+    isCustom: false,
+    capabilities: {
+      reasoningEffortLevels: [
+        { value: "xhigh", label: "Extra High" },
+        { value: "high", label: "High", isDefault: true },
+        { value: "medium", label: "Medium" },
+        { value: "low", label: "Low" },
+      ],
+      supportsFastMode: true,
+      supportsThinkingToggle: false,
+      contextWindowOptions: [],
+      promptInjectedEffortLevels: [],
+    },
+  },
+  {
+    slug: "gpt-5.2",
+    name: "GPT-5.2",
+    isCustom: false,
+    capabilities: {
+      reasoningEffortLevels: [
+        { value: "xhigh", label: "Extra High" },
+        { value: "high", label: "High", isDefault: true },
+        { value: "medium", label: "Medium" },
+        { value: "low", label: "Low" },
+      ],
+      supportsFastMode: true,
+      supportsThinkingToggle: false,
+      contextWindowOptions: [],
+      promptInjectedEffortLevels: [],
+    },
   },
 ];
 
-export function getClaudeModelCapabilities(model: string | null | undefined): ModelCapabilities {
+export function getCodexModelCapabilities(model: string | null | undefined): ModelCapabilities {
   const slug = model?.trim();
   return (
     BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ??
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES
+    DEFAULT_CODEX_MODEL_CAPABILITIES
   );
 }
 
-export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
+export function parseAuthStatusFromOutput(result: CommandResult): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: Pick<ServerProviderAuth, "status">;
   readonly message?: string;
@@ -118,8 +198,7 @@ export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
     return {
       status: "warning",
       auth: { status: "unknown" },
-      message:
-        "Claude Agent authentication status command is unavailable in this version of Claude.",
+      message: "Codex CLI authentication status command is unavailable in this Codex version.",
     };
   }
 
@@ -127,13 +206,13 @@ export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
     lowerOutput.includes("not logged in") ||
     lowerOutput.includes("login required") ||
     lowerOutput.includes("authentication required") ||
-    lowerOutput.includes("run `claude login`") ||
-    lowerOutput.includes("run claude login")
+    lowerOutput.includes("run `codex login`") ||
+    lowerOutput.includes("run codex login")
   ) {
     return {
       status: "error",
       auth: { status: "unauthenticated" },
-      message: "Claude is not authenticated. Run `claude auth login` and try again.",
+      message: "Codex CLI is not authenticated. Run `codex login` and try again.",
     };
   }
 
@@ -159,7 +238,7 @@ export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
     return {
       status: "error",
       auth: { status: "unauthenticated" },
-      message: "Claude is not authenticated. Run `claude auth login` and try again.",
+      message: "Codex CLI is not authenticated. Run `codex login` and try again.",
     };
   }
   if (parsedAuth.attemptedJsonParse) {
@@ -167,7 +246,7 @@ export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
       status: "warning",
       auth: { status: "unknown" },
       message:
-        "Could not verify Claude authentication status from JSON output (missing auth marker).",
+        "Could not verify Codex authentication status from JSON output (missing auth marker).",
     };
   }
   if (result.code === 0) {
@@ -179,289 +258,122 @@ export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
     status: "warning",
     auth: { status: "unknown" },
     message: detail
-      ? `Could not verify Claude authentication status. ${detail}`
-      : "Could not verify Claude authentication status.",
+      ? `Could not verify Codex authentication status. ${detail}`
+      : "Could not verify Codex authentication status.",
   };
 }
 
-// ── Subscription type detection ─────────────────────────────────────
-//
-// The SDK probe returns typed `AccountInfo.subscriptionType` directly.
-// This walker is a best-effort fallback for the `claude auth status`
-// JSON output whose shape is not guaranteed.
-
-/** Keys that directly hold a subscription/plan identifier. */
-const SUBSCRIPTION_TYPE_KEYS = [
-  "subscriptionType",
-  "subscription_type",
-  "plan",
-  "tier",
-  "planType",
-  "plan_type",
-] as const;
-
-/** Keys whose value may be a nested object containing subscription info. */
-const SUBSCRIPTION_CONTAINER_KEYS = ["account", "subscription", "user", "billing"] as const;
-const AUTH_METHOD_KEYS = ["authMethod", "auth_method"] as const;
-const AUTH_METHOD_CONTAINER_KEYS = ["auth", "account", "session"] as const;
-
-/** Lift an unknown value into `Option<string>` if it is a non-empty string. */
-const asNonEmptyString = (v: unknown): Option.Option<string> =>
-  typeof v === "string" && v.length > 0 ? Option.some(v) : Option.none();
-
-/** Lift an unknown value into `Option<Record>` if it is a plain object. */
-const asRecord = (v: unknown): Option.Option<Record<string, unknown>> =>
-  typeof v === "object" && v !== null && !globalThis.Array.isArray(v)
-    ? Option.some(v as Record<string, unknown>)
-    : Option.none();
-
-/**
- * Walk an unknown parsed JSON value looking for a subscription/plan
- * identifier, returning the first match as an `Option`.
- */
-function findSubscriptionType(value: unknown): Option.Option<string> {
-  if (globalThis.Array.isArray(value)) {
-    return Option.firstSomeOf(value.map(findSubscriptionType));
-  }
-
-  return asRecord(value).pipe(
-    Option.flatMap((record) => {
-      const direct = Option.firstSomeOf(
-        SUBSCRIPTION_TYPE_KEYS.map((key) => asNonEmptyString(record[key])),
-      );
-      if (Option.isSome(direct)) return direct;
-
-      return Option.firstSomeOf(
-        SUBSCRIPTION_CONTAINER_KEYS.map((key) =>
-          asRecord(record[key]).pipe(Option.flatMap(findSubscriptionType)),
-        ),
-      );
-    }),
+export const readCodexConfigModelProvider = Effect.fn("readCodexConfigModelProvider")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const settingsService = yield* ServerSettingsService;
+  const codexHome = yield* settingsService.getSettings.pipe(
+    Effect.map(
+      (settings) =>
+        settings.providers.codex.homePath ||
+        process.env.CODEX_HOME ||
+        path.join(OS.homedir(), ".codex"),
+    ),
   );
-}
+  const configPath = path.join(codexHome, "config.toml");
 
-function findAuthMethod(value: unknown): Option.Option<string> {
-  if (globalThis.Array.isArray(value)) {
-    return Option.firstSomeOf(value.map(findAuthMethod));
+  const content = yield* fileSystem
+    .readFileString(configPath)
+    .pipe(Effect.orElseSucceed(() => undefined));
+  if (content === undefined) {
+    return undefined;
   }
 
-  return asRecord(value).pipe(
-    Option.flatMap((record) => {
-      const direct = Option.firstSomeOf(
-        AUTH_METHOD_KEYS.map((key) => asNonEmptyString(record[key])),
-      );
-      if (Option.isSome(direct)) return direct;
+  let inTopLevel = true;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("[")) {
+      inTopLevel = false;
+      continue;
+    }
+    if (!inTopLevel) continue;
 
-      return Option.firstSomeOf(
-        AUTH_METHOD_CONTAINER_KEYS.map((key) =>
-          asRecord(record[key]).pipe(Option.flatMap(findAuthMethod)),
-        ),
-      );
-    }),
-  );
-}
-
-/**
- * Try to extract a subscription type from the `claude auth status` JSON
- * output. This is a zero-cost operation on data we already have.
- */
-const decodeUnknownJson = decodeJsonResult(Schema.Unknown);
-
-function extractSubscriptionTypeFromOutput(result: CommandResult): string | undefined {
-  const parsed = decodeUnknownJson(result.stdout.trim());
-  if (Result.isFailure(parsed)) return undefined;
-  return Option.getOrUndefined(findSubscriptionType(parsed.success));
-}
-
-function extractClaudeAuthMethodFromOutput(result: CommandResult): string | undefined {
-  const parsed = decodeUnknownJson(result.stdout.trim());
-  if (Result.isFailure(parsed)) return undefined;
-  return Option.getOrUndefined(findAuthMethod(parsed.success));
-}
-
-// ── Dynamic model capability adjustment ─────────────────────────────
-
-/** Subscription types where the 1M context window is included in the plan. */
-const PREMIUM_SUBSCRIPTION_TYPES = new Set([
-  "max",
-  "maxplan",
-  "max5",
-  "max20",
-  "enterprise",
-  "team",
-]);
-
-function toTitleCaseWords(value: string): string {
-  return value
-    .split(/[\s_-]+/g)
-    .filter(Boolean)
-    .map((part) => part[0]!.toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
-  const normalized = subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "");
-  if (!normalized) return undefined;
-
-  switch (normalized) {
-    case "max":
-    case "maxplan":
-    case "max5":
-    case "max20":
-      return "Max";
-    case "enterprise":
-      return "Enterprise";
-    case "team":
-      return "Team";
-    case "pro":
-      return "Pro";
-    case "free":
-      return "Free";
-    default:
-      return toTitleCaseWords(subscriptionType!);
+    const match = trimmed.match(/^model_provider\s*=\s*["']([^"']+)["']/);
+    if (match) return match[1];
   }
-}
-
-function normalizeClaudeAuthMethod(authMethod: string | undefined): string | undefined {
-  const normalized = authMethod?.toLowerCase().replace(/[\s_-]+/g, "");
-  if (!normalized) return undefined;
-  if (normalized === "apikey") return "apiKey";
   return undefined;
-}
+});
 
-function claudeAuthMetadata(input: {
-  readonly subscriptionType: string | undefined;
-  readonly authMethod: string | undefined;
-}): { readonly type: string; readonly label: string } | undefined {
-  if (normalizeClaudeAuthMethod(input.authMethod) === "apiKey") {
-    return {
-      type: "apiKey",
-      label: "Claude API Key",
-    };
-  }
-
-  if (input.subscriptionType) {
-    const subscriptionLabel = claudeSubscriptionLabel(input.subscriptionType);
-    return {
-      type: input.subscriptionType,
-      label: `Claude ${subscriptionLabel ?? toTitleCaseWords(input.subscriptionType)} Subscription`,
-    };
-  }
-
-  return undefined;
-}
-
-/**
- * Adjust the built-in model list based on the user's detected subscription.
- *
- * - Premium tiers (Max, Enterprise, Team): 1M context becomes the default.
- * - Other tiers (Pro, free, unknown): 200k context stays the default;
- *   1M remains available as a manual option so users can still enable it.
- */
-export function adjustModelsForSubscription(
-  baseModels: ReadonlyArray<ServerProviderModel>,
-  subscriptionType: string | undefined,
-): ReadonlyArray<ServerProviderModel> {
-  const normalized = subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "");
-  if (!normalized || !PREMIUM_SUBSCRIPTION_TYPES.has(normalized)) {
-    return baseModels;
-  }
-
-  // Flip 1M to be the default for premium users
-  return baseModels.map((model) => {
-    const caps = model.capabilities;
-    if (!caps || caps.contextWindowOptions.length === 0) return model;
-
-    return {
-      ...model,
-      capabilities: {
-        ...caps,
-        contextWindowOptions: caps.contextWindowOptions.map((opt) =>
-          opt.value === "1m"
-            ? { value: opt.value, label: opt.label, isDefault: true as const }
-            : { value: opt.value, label: opt.label },
-        ),
-      },
-    };
-  });
-}
-
-// ── SDK capability probe ────────────────────────────────────────────
+export const hasCustomModelProvider = readCodexConfigModelProvider().pipe(
+  Effect.map((provider) => provider !== undefined && !OPENAI_AUTH_PROVIDERS.has(provider)),
+  Effect.orElseSucceed(() => false),
+);
 
 const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
 
-/**
- * Probe account information by spawning a lightweight Claude Agent SDK
- * session and reading the initialization result.
- *
- * The prompt is never sent to the Anthropic API — we abort immediately
- * after the local initialization phase completes. This gives us the
- * user's subscription type without incurring any token cost.
- *
- * This is used as a fallback when `claude auth status` does not include
- * subscription type information.
- */
-const probeClaudeCapabilities = (binaryPath: string) => {
-  const abort = new AbortController();
-  return Effect.tryPromise(async () => {
-    const q = claudeQuery({
-      prompt: ".",
-      options: {
-        persistSession: false,
-        pathToClaudeCodeExecutable: binaryPath,
-        abortController: abort,
-        maxTurns: 0,
-        settingSources: [],
-        allowedTools: [],
-        stderr: () => {},
-      },
-    });
-    const init = await q.initializationResult();
-    return { subscriptionType: init.account?.subscriptionType };
-  }).pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        if (!abort.signal.aborted) abort.abort();
-      }),
-    ),
+const probeCodexCapabilities = (input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+}) =>
+  Effect.tryPromise((signal) => probeCodexAccountState({ ...input, signal })).pipe(
     Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
     Effect.result,
     Effect.map((result) => {
       if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
+      if (Option.isNone(result.success)) return undefined;
+      const state = result.success.value;
+      return {
+        ...state,
+        usageLimits: normalizeCodexUsageLimits(state.rateLimits, new Date().toISOString()),
+      };
     }),
   );
-};
 
-const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (args: ReadonlyArray<string>) {
-  const claudeSettings = yield* Effect.service(ServerSettingsService).pipe(
-    Effect.flatMap((service) => service.getSettings),
-    Effect.map((settings) => settings.providers.claudeAgent),
+type ResolvedCodexAccount =
+  | CodexAccountSnapshot
+  | (CodexAccountState & { readonly usageLimits: ServerProviderUsageLimits | undefined });
+
+function isResolvedCodexAccountState(
+  value: ResolvedCodexAccount | undefined,
+): value is CodexAccountState & { readonly usageLimits: ServerProviderUsageLimits | undefined } {
+  return typeof value === "object" && value !== null && "snapshot" in value;
+}
+
+const runCodexCommand = Effect.fn("runCodexCommand")(function* (args: ReadonlyArray<string>) {
+  const settingsService = yield* ServerSettingsService;
+  const codexSettings = yield* settingsService.getSettings.pipe(
+    Effect.map((settings) => settings.providers.codex),
   );
-  const command = ChildProcess.make(claudeSettings.binaryPath, [...args], {
+  const command = ChildProcess.make(codexSettings.binaryPath, [...args], {
     shell: process.platform === "win32",
+    env: {
+      ...process.env,
+      ...(codexSettings.homePath ? { CODEX_HOME: codexSettings.homePath } : {}),
+    },
   });
-  return yield* spawnAndCollect(claudeSettings.binaryPath, command);
+  return yield* spawnAndCollect(codexSettings.binaryPath, command);
 });
 
-export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
-  resolveSubscriptionType?: (binaryPath: string) => Effect.Effect<string | undefined>,
+export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(function* (
+  resolveAccount?: (input: {
+    readonly binaryPath: string;
+    readonly homePath?: string;
+  }) => Effect.Effect<ResolvedCodexAccount | undefined>,
   resolveCachedUsageLimits?: () => Effect.Effect<ServerProviderUsageLimits | undefined>,
 ): Effect.fn.Return<
   ServerProvider,
   ServerSettingsError,
-  ChildProcessSpawner.ChildProcessSpawner | ServerSettingsService
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | Path.Path
+  | ServerSettingsService
 > {
-  const claudeSettings = yield* Effect.service(ServerSettingsService).pipe(
+  const codexSettings = yield* Effect.service(ServerSettingsService).pipe(
     Effect.flatMap((service) => service.getSettings),
-    Effect.map((settings) => settings.providers.claudeAgent),
+    Effect.map((settings) => settings.providers.codex),
   );
   const checkedAt = new Date().toISOString();
   const models = providerModelsFromSettings(
     BUILT_IN_MODELS,
     PROVIDER,
-    claudeSettings.customModels,
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+    codexSettings.customModels,
+    DEFAULT_CODEX_MODEL_CAPABILITIES,
   );
   const cachedUsageLimits = resolveCachedUsageLimits
     ? yield* resolveCachedUsageLimits()
@@ -480,27 +392,27 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   }) =>
     buildServerProvider({
       provider: PROVIDER,
-      enabled: claudeSettings.enabled,
+      enabled: codexSettings.enabled,
       checkedAt,
       models: input.models ?? models,
       probe: input.probe,
       ...(input.usageLimits ? { usageLimits: input.usageLimits } : {}),
     });
 
-  if (!claudeSettings.enabled) {
+  if (!codexSettings.enabled) {
     return buildProviderSnapshot({
       probe: {
         installed: false,
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Claude is disabled in T3 Code settings.",
+        message: "Codex is disabled in T3 Code settings.",
       },
       ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
-  const versionProbe = yield* runClaudeCommand(["--version"]).pipe(
+  const versionProbe = yield* runCodexCommand(["--version"]).pipe(
     Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
     Effect.result,
   );
@@ -514,8 +426,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         status: "error",
         auth: { status: "unknown" },
         message: isCommandMissingCause(error)
-          ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
-          : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+          ? "Codex CLI (`codex`) is not installed or not on PATH."
+          : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       },
       ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
@@ -528,15 +440,16 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message:
-          "Claude Agent CLI is installed but failed to run. Timed out while running command.",
+        message: "Codex CLI is installed but failed to run. Timed out while running command.",
       },
       ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
   const version = versionProbe.success.value;
-  const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
+  const parsedVersion =
+    parseCodexCliVersion(`${version.stdout}\n${version.stderr}`) ??
+    parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
   if (version.code !== 0) {
     const detail = detailFromResult(version);
     return buildProviderSnapshot({
@@ -546,41 +459,53 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         status: "error",
         auth: { status: "unknown" },
         message: detail
-          ? `Claude Agent CLI is installed but failed to run. ${detail}`
-          : "Claude Agent CLI is installed but failed to run.",
+          ? `Codex CLI is installed but failed to run. ${detail}`
+          : "Codex CLI is installed but failed to run.",
       },
       ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
     });
   }
 
-  // ── Auth check + subscription detection ────────────────────────────
+  if (parsedVersion && !isCodexCliVersionSupported(parsedVersion)) {
+    return buildProviderSnapshot({
+      probe: {
+        installed: true,
+        version: parsedVersion,
+        status: "error",
+        auth: { status: "unknown" },
+        message: formatCodexCliUpgradeMessage(parsedVersion),
+      },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
+    });
+  }
 
-  const authProbe = yield* runClaudeCommand(["auth", "status"]).pipe(
+  if (yield* hasCustomModelProvider) {
+    return buildProviderSnapshot({
+      probe: {
+        installed: true,
+        version: parsedVersion,
+        status: "ready",
+        auth: { status: "unknown" },
+        message: "Using a custom Codex model provider; OpenAI login check skipped.",
+      },
+      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
+    });
+  }
+
+  const authProbe = yield* runCodexCommand(["login", "status"]).pipe(
     Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
     Effect.result,
   );
-
-  // Determine subscription type from multiple sources (cheapest first):
-  // 1. `claude auth status` JSON output (may or may not contain it)
-  // 2. Cached SDK probe (spawns a Claude process on miss, reads
-  //    `initializationResult()` for account metadata, then aborts
-  //    immediately — no API tokens are consumed)
-
-  let subscriptionType: string | undefined;
-  let authMethod: string | undefined;
-
-  if (Result.isSuccess(authProbe) && Option.isSome(authProbe.success)) {
-    subscriptionType = extractSubscriptionTypeFromOutput(authProbe.success.value);
-    authMethod = extractClaudeAuthMethodFromOutput(authProbe.success.value);
-  }
-
-  if (!subscriptionType && resolveSubscriptionType) {
-    subscriptionType = yield* resolveSubscriptionType(claudeSettings.binaryPath);
-  }
-
-  const resolvedModels = adjustModelsForSubscription(models, subscriptionType);
-
-  // ── Handle auth results (same logic as before, adjusted models) ──
+  const account = resolveAccount
+    ? yield* resolveAccount({
+        binaryPath: codexSettings.binaryPath,
+        homePath: codexSettings.homePath,
+      })
+    : undefined;
+  const accountSnapshot = isResolvedCodexAccountState(account) ? account.snapshot : account;
+  const resolvedModels = adjustCodexModelsForAccount(models, accountSnapshot);
+  const accountUsageLimits = isResolvedCodexAccountState(account) ? account.usageLimits : undefined;
+  const usageLimits = cachedUsageLimits ?? accountUsageLimits;
 
   if (Result.isFailure(authProbe)) {
     const error = authProbe.failure;
@@ -593,10 +518,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         auth: { status: "unknown" },
         message:
           error instanceof Error
-            ? `Could not verify Claude authentication status: ${error.message}.`
-            : "Could not verify Claude authentication status.",
+            ? `Could not verify Codex authentication status: ${error.message}.`
+            : "Could not verify Codex authentication status.",
       },
-      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
+      ...(usageLimits ? { usageLimits } : {}),
     });
   }
 
@@ -608,14 +533,15 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: parsedVersion,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Could not verify Claude authentication status. Timed out while running command.",
+        message: "Could not verify Codex authentication status. Timed out while running command.",
       },
-      ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
+      ...(usageLimits ? { usageLimits } : {}),
     });
   }
 
-  const parsed = parseClaudeAuthStatusFromOutput(authProbe.success.value);
-  const authMetadata = claudeAuthMetadata({ subscriptionType, authMethod });
+  const parsed = parseAuthStatusFromOutput(authProbe.success.value);
+  const authType = codexAuthSubType(accountSnapshot);
+  const authLabel = codexAuthSubLabel(accountSnapshot);
   return buildProviderSnapshot({
     models: resolvedModels,
     probe: {
@@ -624,47 +550,68 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       status: parsed.status,
       auth: {
         ...parsed.auth,
-        ...(authMetadata ? authMetadata : {}),
+        ...(authType ? { type: authType } : {}),
+        ...(authLabel ? { label: authLabel } : {}),
       },
       ...(parsed.message ? { message: parsed.message } : {}),
     },
-    ...(cachedUsageLimits ? { usageLimits: cachedUsageLimits } : {}),
+    ...(usageLimits ? { usageLimits } : {}),
   });
 });
 
-export const ClaudeProviderLive = Layer.effect(
-  ClaudeProvider,
+export const CodexProviderLive = Layer.effect(
+  CodexProvider,
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const usageLimitsRepository = yield* ProviderUsageLimitsRepository;
-
-    const subscriptionProbeCache = yield* Cache.make({
-      capacity: 1,
+    const accountProbeCache = yield* Cache.make({
+      capacity: 4,
       timeToLive: Duration.minutes(5),
-      lookup: (binaryPath: string) =>
-        probeClaudeCapabilities(binaryPath).pipe(Effect.map((r) => r?.subscriptionType)),
+      lookup: (key: string) => {
+        const [binaryPath, homePath] = JSON.parse(key) as [string, string | undefined];
+        return probeCodexCapabilities({
+          binaryPath,
+          ...(homePath ? { homePath } : {}),
+        });
+      },
     });
 
-    const checkProvider = checkClaudeProviderStatus(
-      (binaryPath) => Cache.get(subscriptionProbeCache, binaryPath),
+    const checkProvider = checkCodexProviderStatus(
+      (input) =>
+        Cache.get(accountProbeCache, JSON.stringify([input.binaryPath, input.homePath])).pipe(
+          Effect.tap((state) =>
+            state?.usageLimits
+              ? usageLimitsRepository
+                  .upsert({
+                    provider: PROVIDER,
+                    usageLimits: state.usageLimits,
+                  })
+                  .pipe(Effect.catchCause(() => Effect.void))
+              : Effect.void,
+          ),
+        ),
       () =>
         readPersistedProviderUsageLimits(PROVIDER, usageLimitsRepository).pipe(
           Effect.orElseSucceed(() => undefined),
         ),
     ).pipe(
       Effect.provideService(ServerSettingsService, serverSettings),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(ProviderUsageLimitsRepository, usageLimitsRepository),
     );
 
-    return yield* makeManagedServerProvider<ClaudeSettings>({
+    return yield* makeManagedServerProvider<CodexSettings>({
       getSettings: serverSettings.getSettings.pipe(
-        Effect.map((settings) => settings.providers.claudeAgent),
+        Effect.map((settings) => settings.providers.codex),
         Effect.orDie,
       ),
       streamSettings: serverSettings.streamChanges.pipe(
-        Stream.map((settings) => settings.providers.claudeAgent),
+        Stream.map((settings) => settings.providers.codex),
       ),
       haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
       checkProvider,
