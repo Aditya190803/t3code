@@ -17,7 +17,7 @@ const claudeFiveHourEvent = {
   rate_limit_info: {
     status: "allowed",
     rateLimitType: "five_hour",
-    utilization: 42,
+    utilization: 0.42,
     resetsAt: RESETS_AT_SECONDS,
   },
 } as const;
@@ -58,7 +58,7 @@ describe("parseRuntimeUsageLimitsUpdate", () => {
         rate_limit_info: {
           status: "allowed_warning",
           rateLimitType: "seven_day",
-          utilization: 88,
+          utilization: 0.88,
           resetsAt: RESETS_AT_SECONDS,
         },
       },
@@ -82,7 +82,7 @@ describe("parseRuntimeUsageLimitsUpdate", () => {
         rateLimits: {
           rate_limit_info: {
             rate_limit_type: "seven_day",
-            utilization: 27,
+            utilization: 0.27,
             resets_at: RESETS_AT_ISO,
           },
         },
@@ -95,6 +95,48 @@ describe("parseRuntimeUsageLimitsUpdate", () => {
         resetsAt: RESETS_AT_ISO,
       },
     ]);
+  });
+
+  it("scales Claude utilization from a 0–1 fraction onto usedPercent", () => {
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: claudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: {
+          rate_limit_info: { rateLimitType: "five_hour", utilization: 0.85 },
+        },
+      })?.windows[0]?.usedPercent,
+    ).toBe(85);
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: claudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: {
+          rate_limit_info: { rateLimitType: "five_hour", utilization: 1 },
+        },
+      })?.windows[0]?.usedPercent,
+    ).toBe(100);
+  });
+
+  it("leaves Claude usedPercent and already-percent utilization unscaled", () => {
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: claudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: {
+          rate_limit_info: { rateLimitType: "five_hour", usedPercent: 42 },
+        },
+      })?.windows[0]?.usedPercent,
+    ).toBe(42);
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: claudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: {
+          rate_limit_info: { rateLimitType: "five_hour", utilization: 42 },
+        },
+      })?.windows[0]?.usedPercent,
+    ).toBe(42);
   });
 
   it("ignores Claude sub-limits that have no bar of their own", () => {
@@ -117,6 +159,22 @@ describe("parseRuntimeUsageLimitsUpdate", () => {
         rateLimits: { rate_limit_info: { status: "allowed", rateLimitType: "five_hour" } },
       }),
     ).toBeUndefined();
+  });
+
+  it("ignores out-of-range Claude reset timestamps instead of throwing", () => {
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: claudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: {
+          rate_limit_info: {
+            rateLimitType: "five_hour",
+            utilization: 0.4,
+            resetsAt: Number.MAX_VALUE,
+          },
+        },
+      })?.windows,
+    ).toEqual([{ label: "Session", usedPercent: 40, windowDurationMins: 300 }]);
   });
 
   it("reads a Codex rolling notification from its rateLimits envelope", () => {

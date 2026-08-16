@@ -1,5 +1,6 @@
 import type { ServerProviderUsageLimits } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 import {
   makeUnavailableUsageLimits,
@@ -23,6 +24,11 @@ export interface CodexRateLimitWindow {
 export interface CodexRateLimitSnapshot {
   readonly primary?: CodexRateLimitWindow | null;
   readonly secondary?: CodexRateLimitWindow | null;
+}
+
+function epochSecondsToIso(value: number): string | undefined {
+  const dt = DateTime.make(value * 1000);
+  return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
 }
 
 export function resolveCodexRateLimitSnapshotUsageLimits(input: {
@@ -57,13 +63,13 @@ export function resolveCodexRateLimitSnapshotUsageLimits(input: {
         : reported.length > 1 && index === 0
           ? CODEX_SESSION_WINDOW_DURATION_MINS
           : CODEX_WEEKLY_WINDOW_DURATION_MINS;
+    const resetsAt =
+      typeof window.resetsAt === "number" ? epochSecondsToIso(window.resetsAt) : undefined;
     return {
       label: "",
       usedPercent: window.usedPercent,
       windowDurationMins: durationMins,
-      ...(typeof window.resetsAt === "number"
-        ? { resetsAt: DateTime.formatIso(DateTime.makeUnsafe(window.resetsAt * 1000)) }
-        : {}),
+      ...(resetsAt ? { resetsAt } : {}),
     };
   });
 

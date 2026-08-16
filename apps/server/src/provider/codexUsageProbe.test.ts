@@ -109,6 +109,19 @@ describe("resolveCodexRateLimitSnapshotUsageLimits", () => {
     expect(usage.windows[0]?.kind).toBe("weekly");
   });
 
+  it("omits out-of-range reset timestamps instead of throwing", () => {
+    const usage = resolveCodexRateLimitSnapshotUsageLimits({
+      checkedAt: CHECKED_AT,
+      snapshot: {
+        secondary: { usedPercent: 50, resetsAt: Number.MAX_VALUE, windowDurationMins: 10080 },
+      },
+    });
+
+    expect(usage.available).toBe(true);
+    expect(usage.windows[0]?.usedPercent).toBe(50);
+    expect(usage.windows[0]?.resetsAt).toBeUndefined();
+  });
+
   it("returns unavailable when no snapshot is reported", () => {
     expect(resolveCodexRateLimitSnapshotUsageLimits({ checkedAt: CHECKED_AT })).toEqual({
       source: "codexAppServer",

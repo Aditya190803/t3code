@@ -53,11 +53,12 @@ function readFiniteNumber(value: unknown): number | undefined {
  * already large enough to be milliseconds.
  */
 function epochToIso(value: number | undefined): string | undefined {
-  if (value === undefined || value <= 0) {
+  if (value === undefined || value <= 0 || !Number.isFinite(value)) {
     return undefined;
   }
   const millis = value > 1e12 ? value : value * 1000;
-  return DateTime.formatIso(DateTime.makeUnsafe(millis));
+  const dt = DateTime.make(millis);
+  return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
 }
 
 function readClaudeRateLimitType(info: Readonly<Record<string, unknown>>): string | undefined {
@@ -78,6 +79,16 @@ function readClaudeResetsAt(info: Readonly<Record<string, unknown>>): string | u
   return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
 }
 
+/**
+ * Claude's live `rate_limit_event` reports `utilization` as a 0–1 fraction
+ * (`0.85` = 85%). Values already above 1 are treated as percents so a
+ * percent-scaled payload still maps onto the bar. `usedPercent`, when present,
+ * is already 0–100 and is not scaled again.
+ */
+function claudeUtilizationToUsedPercent(value: number): number {
+  return value <= 1 ? value * 100 : value;
+}
+
 export function parseClaudeRuntimeUsageWindows(
   rateLimits: unknown,
 ): ReadonlyArray<RawUsageWindowInput> {
@@ -93,8 +104,15 @@ export function parseClaudeRuntimeUsageWindows(
   }
   const rateLimitType = readClaudeRateLimitType(info);
   const window = rateLimitType ? CLAUDE_WINDOW_BY_RATE_LIMIT_TYPE[rateLimitType] : undefined;
-  const utilization = readFiniteNumber(info.utilization ?? info.usedPercent);
-  if (!window || utilization === undefined) {
+  const usedPercentRaw = readFiniteNumber(info.usedPercent);
+  const utilization = readFiniteNumber(info.utilization);
+  const usedPercent =
+    usedPercentRaw !== undefined
+      ? usedPercentRaw
+      : utilization !== undefined
+        ? claudeUtilizationToUsedPercent(utilization)
+        : undefined;
+  if (!window || usedPercent === undefined) {
     return [];
   }
 
@@ -102,7 +120,7 @@ export function parseClaudeRuntimeUsageWindows(
   return [
     {
       label: window.label,
-      usedPercent: utilization,
+      usedPercent,
       windowDurationMins: window.windowDurationMins,
       ...(resetsAt ? { resetsAt } : {}),
     },

@@ -55,11 +55,10 @@ export const ProviderUsageLimitsIngestionLive = Layer.effectDiscard(
             checkedAt,
             windows: update.windows,
           });
-        }),
+          // Isolate failures to this event so a bad payload cannot complete
+          // the subscriber and stop all later live usage updates.
+        }).pipe(Effect.ignoreCause({ log: true })),
       ),
-      // A malformed payload or a torn-down instance must not kill the
-      // subscriber — usage telemetry is strictly an enrichment.
-      Effect.ignoreCause({ log: true }),
       Effect.forkScoped,
     );
   }),

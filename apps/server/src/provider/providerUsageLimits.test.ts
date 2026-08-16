@@ -228,6 +228,48 @@ describe("resolveUsageLimitsAfterRefresh", () => {
     ).toBe(published);
   });
 
+  it("lets an API-key unavailable probe replace previously available bars", () => {
+    const apiKeyUnavailable: ServerProviderUsageLimits = {
+      source: "claudeStatusProbe",
+      available: false,
+      reason: "Usage limits unavailable for Claude API key accounts.",
+      checkedAt: "2026-08-09T10:00:10.000Z",
+      windows: [],
+    };
+    expect(
+      resolveUsageLimitsAfterRefresh({
+        published,
+        probed: apiKeyUnavailable,
+        livePatched: false,
+      }),
+    ).toBe(apiKeyUnavailable);
+    expect(
+      resolveUsageLimitsAfterRefresh({
+        published,
+        probed: apiKeyUnavailable,
+        livePatched: true,
+      }),
+    ).toBe(apiKeyUnavailable);
+  });
+
+  it("lets a settings-triggered unavailable probe replace previously available bars", () => {
+    const probedUnavailable: ServerProviderUsageLimits = {
+      source: "claudeStatusProbe",
+      available: false,
+      reason: "Could not read usage limits for this Claude account.",
+      checkedAt: "2026-08-09T10:00:10.000Z",
+      windows: [],
+    };
+    expect(
+      resolveUsageLimitsAfterRefresh({
+        published,
+        probed: probedUnavailable,
+        livePatched: false,
+        settingsChanged: true,
+      }),
+    ).toBe(probedUnavailable);
+  });
+
   it("lets a successful probe replace bars when nothing live-patched during it", () => {
     expect(
       resolveUsageLimitsAfterRefresh({

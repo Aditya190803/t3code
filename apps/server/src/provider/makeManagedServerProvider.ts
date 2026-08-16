@@ -70,14 +70,23 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     nextSnapshot: ServerProvider,
   ) {
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-      if (state.enrichmentGeneration !== generation || Equal.equals(state.snapshot, nextSnapshot)) {
+      if (state.enrichmentGeneration !== generation) {
+        return [null, state] as const;
+      }
+      // Live usage patches can land while enrichment is in flight. Keep the
+      // current usageLimits so a stale enriched snapshot cannot revert them.
+      const mergedSnapshot =
+        nextSnapshot.usageLimits === state.snapshot.usageLimits
+          ? nextSnapshot
+          : { ...nextSnapshot, usageLimits: state.snapshot.usageLimits };
+      if (Equal.equals(state.snapshot, mergedSnapshot)) {
         return [null, state] as const;
       }
       return [
-        nextSnapshot,
+        mergedSnapshot,
         {
           ...state,
-          snapshot: nextSnapshot,
+          snapshot: mergedSnapshot,
         },
       ] as const;
     });
@@ -157,6 +166,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     }
 
     const usageEpochAtStart = (yield* Ref.get(snapshotStateRef)).usageEpoch;
+    const settingsChanged = input.haveSettingsChanged(previousSettings, nextSettings);
     const nextSnapshot = yield* input.checkProvider;
     const { snapshot: publishedSnapshot, generation } = yield* Ref.modify(
       snapshotStateRef,
@@ -168,6 +178,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           published: state.snapshot.usageLimits,
           probed: nextSnapshot.usageLimits,
           livePatched: state.usageEpoch !== usageEpochAtStart,
+          settingsChanged,
         });
         const snapshot =
           usageLimits === nextSnapshot.usageLimits

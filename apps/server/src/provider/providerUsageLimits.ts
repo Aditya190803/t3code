@@ -153,6 +153,16 @@ export function applyRuntimeUsageLimits(input: {
 }
 
 /**
+ * API-key accounts cannot report subscription windows. That unavailable
+ * snapshot must replace previously available bars (a user who switched off a
+ * subscription), unlike a timed-out `/usage` probe which should keep the last
+ * good snapshot.
+ */
+function isAuthoritativeUsageUnavailable(limits: ServerProviderUsageLimits | undefined): boolean {
+  return limits?.available === false && /\bAPI key\b/i.test(limits.reason ?? "");
+}
+
+/**
  * Choose usage limits after a status probe finishes.
  *
  * Live `account.rate-limits.updated` patches land on the published snapshot
@@ -160,14 +170,24 @@ export function applyRuntimeUsageLimits(input: {
  * when it completes, so it always looks newer than those patches. If a live
  * write happened during the wait, fold the published windows on top of the
  * probe. A probe that comes back unavailable must not wipe bars a previous
- * probe or live event already established.
+ * probe or live event already established, unless the account itself cannot
+ * have usage (API key).
  */
 export function resolveUsageLimitsAfterRefresh(input: {
   readonly published: ServerProviderUsageLimits | undefined;
   readonly probed: ServerProviderUsageLimits | undefined;
   readonly livePatched: boolean;
+  readonly settingsChanged?: boolean;
 }): ServerProviderUsageLimits | undefined {
-  const { published, probed, livePatched } = input;
+  const { published, probed, livePatched, settingsChanged } = input;
+  // A settings change can mean a different account. Keep last-good bars only
+  // for ordinary periodic refresh races, not when the user just reconfigured.
+  if (settingsChanged === true) {
+    return probed;
+  }
+  if (isAuthoritativeUsageUnavailable(probed)) {
+    return probed;
+  }
   if (published?.available === true && probed?.available !== true) {
     return published;
   }
