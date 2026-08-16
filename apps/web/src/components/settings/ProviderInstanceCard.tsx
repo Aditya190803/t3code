@@ -21,14 +21,10 @@ import {
   type ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
-  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import { cn } from "../../lib/utils";
-import { formatDateTimeTimestamp } from "../../timestampFormat";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { usePrimarySettings } from "../../hooks/useSettings";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -54,89 +50,6 @@ import {
   getProviderVersionLabel,
   type ProviderStatusKey,
 } from "./providerStatus";
-
-function usageBarColor(percent: number): string {
-  if (percent >= 90) return "bg-destructive";
-  if (percent >= 70) return "bg-warning";
-  return "bg-foreground";
-}
-
-export function formatUsageResetDate(
-  resetsAt: string | undefined,
-  timestampFormat: TimestampFormat = "locale",
-): string | null {
-  if (!resetsAt) return null;
-  const formatted = formatDateTimeTimestamp(resetsAt, timestampFormat);
-  return formatted.length > 0 ? formatted : null;
-}
-
-export function getUsageWindowKey(window: ServerProviderUsageLimits["windows"][number]): string {
-  return `${window.kind}:${window.label}:${window.windowDurationMins ?? "unknown"}:${window.resetsAt ?? "none"}`;
-}
-
-function ProviderUsageBars(props: {
-  readonly usageLimits: ServerProviderUsageLimits | undefined;
-  readonly enabled: boolean;
-}) {
-  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
-  if (!props.enabled || !props.usageLimits) return null;
-
-  const { usageLimits } = props;
-
-  if (!usageLimits.available) {
-    return (
-      <p className="mt-1 text-xs text-muted-foreground">
-        {usageLimits.reason ?? "Usage data unavailable"}
-      </p>
-    );
-  }
-
-  if (usageLimits.windows.length === 0) return null;
-
-  return (
-    <div className="mt-4 grid gap-3">
-      {usageLimits.windows.map((window) => {
-        const color = usageBarColor(window.usedPercent);
-        // The bar width and the "% remaining" label must derive from the same
-        // rounded number. Deriving the label from a rounded value and the bar
-        // from the raw one makes 99.6% read as "0% remaining" next to a bar
-        // that is visibly not full.
-        const roundedPercent = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
-        const remainingPercent = 100 - roundedPercent;
-        const windowKey = getUsageWindowKey(window);
-        const resetDateStr = formatUsageResetDate(window.resetsAt, timestampFormat);
-
-        return (
-          <div key={windowKey} className="grid gap-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-foreground">{window.label}</span>
-              <span className="text-muted-foreground">{remainingPercent}% remaining</span>
-            </div>
-            <div
-              className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-              role="progressbar"
-              aria-label={`${window.label} usage ${roundedPercent}% used`}
-              aria-valuenow={roundedPercent}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div
-                className={cn(
-                  "h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none",
-                  color,
-                )}
-                style={{ width: `${roundedPercent}%` }}
-              />
-            </div>
-            {resetDateStr && (
-              <div className="text-[11px] text-muted-foreground">Resets {resetDateStr}</div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -792,7 +705,6 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
-            <ProviderUsageBars usageLimits={liveProvider?.usageLimits} enabled={enabled} />
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button

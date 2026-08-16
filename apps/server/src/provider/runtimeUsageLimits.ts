@@ -12,6 +12,7 @@
  */
 import type { ProviderDriverKind, ServerProviderUsageLimits } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 import {
   resolveCodexRateLimitSnapshotUsageLimits,
@@ -20,9 +21,9 @@ import {
 import type { RawUsageWindowInput } from "./providerUsageLimits.ts";
 
 /**
- * Claude reports each limit window separately. Only the two windows Settings
- * renders are mapped: the `*_opus` / `*_sonnet` weekly sub-limits and `overage`
- * would all collapse onto the same "weekly" slot and fight over it.
+ * Claude reports each limit window separately. Only the two windows the Usage
+ * page renders are mapped: the `*_opus` / `*_sonnet` weekly sub-limits and
+ * `overage` would all collapse onto the same "weekly" slot and fight over it.
  */
 const CLAUDE_WINDOW_BY_RATE_LIMIT_TYPE: Readonly<
   Record<string, { readonly label: string; readonly windowDurationMins: number }>
@@ -59,19 +60,45 @@ function epochToIso(value: number | undefined): string | undefined {
   return DateTime.formatIso(DateTime.makeUnsafe(millis));
 }
 
+function readClaudeRateLimitType(info: Readonly<Record<string, unknown>>): string | undefined {
+  const raw = info.rateLimitType ?? info.rate_limit_type;
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function readClaudeResetsAt(info: Readonly<Record<string, unknown>>): string | undefined {
+  const raw = info.resetsAt ?? info.resets_at;
+  const asNumber = readFiniteNumber(raw);
+  if (asNumber !== undefined) {
+    return epochToIso(asNumber);
+  }
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const dt = DateTime.make(raw);
+  return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
+}
+
 export function parseClaudeRuntimeUsageWindows(
   rateLimits: unknown,
 ): ReadonlyArray<RawUsageWindowInput> {
   const event = readRecord(rateLimits);
-  const info = readRecord(event?.rate_limit_info) ?? event;
-  const rateLimitType = typeof info?.rateLimitType === "string" ? info.rateLimitType : undefined;
+  const nested = readRecord(event?.rateLimits);
+  const info =
+    readRecord(event?.rate_limit_info) ??
+    readRecord(event?.rateLimitInfo) ??
+    readRecord(nested?.rate_limit_info) ??
+    event;
+  if (!info) {
+    return [];
+  }
+  const rateLimitType = readClaudeRateLimitType(info);
   const window = rateLimitType ? CLAUDE_WINDOW_BY_RATE_LIMIT_TYPE[rateLimitType] : undefined;
-  const utilization = readFiniteNumber(info?.utilization);
+  const utilization = readFiniteNumber(info.utilization ?? info.usedPercent);
   if (!window || utilization === undefined) {
     return [];
   }
 
-  const resetsAt = epochToIso(readFiniteNumber(info?.resetsAt));
+  const resetsAt = readClaudeResetsAt(info);
   return [
     {
       label: window.label,

@@ -55,12 +55,45 @@ describe("parseRuntimeUsageLimitsUpdate", () => {
       driverKind: claudeDriver,
       checkedAt: CHECKED_AT,
       rateLimits: {
-        rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day", utilization: 88 },
+        rate_limit_info: {
+          status: "allowed_warning",
+          rateLimitType: "seven_day",
+          utilization: 88,
+          resetsAt: RESETS_AT_SECONDS,
+        },
       },
     });
 
     expect(update?.windows).toEqual([
-      { label: "Weekly", usedPercent: 88, windowDurationMins: 10080 },
+      {
+        label: "Weekly",
+        usedPercent: 88,
+        windowDurationMins: 10080,
+        resetsAt: RESETS_AT_ISO,
+      },
+    ]);
+  });
+
+  it("reads Claude snake_case reset fields and ISO reset strings", () => {
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: claudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: {
+          rate_limit_info: {
+            rate_limit_type: "seven_day",
+            utilization: 27,
+            resets_at: RESETS_AT_ISO,
+          },
+        },
+      })?.windows,
+    ).toEqual([
+      {
+        label: "Weekly",
+        usedPercent: 27,
+        windowDurationMins: 10080,
+        resetsAt: RESETS_AT_ISO,
+      },
     ]);
   });
 

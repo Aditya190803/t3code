@@ -16,17 +16,28 @@ import { makeUnavailableUsageLimits, makeUsageLimitsSnapshot } from "./providerU
 
 export type { ProbeClock } from "./ptyProbeSupport.ts";
 
-const CURSOR_USAGE_PROBE_TIMEOUT_MS = 10_000;
+const CURSOR_USAGE_PROBE_TIMEOUT_MS = 25_000;
 const CURSOR_USAGE_OUTPUT_SETTLE_MS = 200;
 /**
- * The Cursor agent TUI drops input written before it finishes booting, so
- * `/usage` is re-issued a few times rather than waiting out the full probe
- * timeout on a single dropped keystroke.
+ * `/usage` is a slash command that is only registered after the TUI finishes
+ * booting and the dashboard client is up. Typing it during the splash screen
+ * opens the command palette with "No matches" and never paints the usage
+ * pager. Wait for the composer, give the dashboard a beat to register the
+ * command, then retry with Escape if the palette misses.
+ *
+ * Retries are scheduled from the send itself: if `/usage` is swallowed with
+ * no further paint, waiting for the next `onData` would sit until timeout.
  */
-const CURSOR_USAGE_COMMAND_RESEND_MS = 750;
-const CURSOR_USAGE_COMMAND_MAX_RESENDS = 3;
+const CURSOR_USAGE_COMMAND_READY_DELAY_MS = 800;
+const CURSOR_USAGE_COMMAND_RETRY_MS = 1_500;
+const CURSOR_USAGE_COMMAND_MAX_ATTEMPTS = 4;
 /** Cursor's `/usage` window resets on a monthly cadence, not a fixed weekly one. */
-const CURSOR_INCLUDED_WINDOW_DURATION_MINS = 30 * 24 * 60;
+const CURSOR_MONTHLY_WINDOW_DURATION_MINS = 30 * 24 * 60;
+const CURSOR_USAGE_ROW_LABELS = ["Included", "Auto", "API"] as const;
+
+function isCursorUsageRowLabel(value: string): value is (typeof CURSOR_USAGE_ROW_LABELS)[number] {
+  return (CURSOR_USAGE_ROW_LABELS as readonly string[]).includes(value);
+}
 
 export interface CursorUsageProbeResult {
   readonly usageLimits: ServerProviderUsageLimits;
@@ -60,16 +71,44 @@ function inferYearForCursorReset(checkedAt: string): number {
  */
 function parseCursorResetsAtIso(checkedAt: string, resetText: string): string | undefined {
   const trimmed = resetText.trim().replace(/\s+/g, " ");
-  const match = trimmed.match(/^(\d{1,2})\s+([A-Za-z]{3,9})(?:\s+((?:19|20)\d{2}))?$/);
+  const match = trimmed.match(
+    /^(?:(\d{1,2})\s+([A-Za-z]{3,9})|([A-Za-z]{3,9})\s+(\d{1,2}))(?:\s+((?:19|20)\d{2}))?$/,
+  );
   if (!match) return undefined;
-  const [, day, month, explicitYear] = match;
+  const day = match[1] ?? match[4];
+  const month = match[2] ?? match[3];
+  const explicitYear = match[5];
+  if (!day || !month) return undefined;
   const hasExplicitYear = Boolean(explicitYear);
   const year = explicitYear ?? String(inferYearForCursorReset(checkedAt));
-  const canonical = `${month} ${day}, ${year}`;
+  // `/usage` writes "Sept"; DateTime wants a 3-letter English month.
+  const canonical = `${month.slice(0, 3)} ${day}, ${year}`;
   const dt = DateTime.makeZoned(canonical, { timeZone: "UTC", adjustForTimeZone: true });
   return Option.isSome(dt)
     ? DateTime.formatIso(rollResetYearForward(dt.value, checkedAt, hasExplicitYear))
     : undefined;
+}
+
+function parseCursorUsageRows(cleaned: string): ReadonlyArray<{
+  readonly label: (typeof CURSOR_USAGE_ROW_LABELS)[number];
+  readonly usedPercent: number;
+}> {
+  const rows = new Map<(typeof CURSOR_USAGE_ROW_LABELS)[number], number>();
+  // Ink may emit `Included  2% used` or the compact `Included: 2% used`, and
+  // cursor addressing often leaves no line start in front of the label.
+  const pattern = /\b(Included|Auto|API)\s*:?\s*(\d{1,3}(?:\.\d+)?)\s*%/gi;
+  for (const match of cleaned.matchAll(pattern)) {
+    const label = match[1];
+    const usedPercent = parsePercent(match[2]);
+    if (!label || !isCursorUsageRowLabel(label) || usedPercent === undefined || rows.has(label)) {
+      continue;
+    }
+    rows.set(label, usedPercent);
+  }
+  return CURSOR_USAGE_ROW_LABELS.flatMap((label) => {
+    const usedPercent = rows.get(label);
+    return usedPercent === undefined ? [] : [{ label, usedPercent }];
+  });
 }
 
 export function parseCursorUsageLimitsOutput(input: {
@@ -77,25 +116,23 @@ export function parseCursorUsageLimitsOutput(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const cleaned = stripAnsi(input.output);
-  const includedMatch = cleaned.match(/^\s*Included\s+(\d{1,3}(?:\.\d+)?)\s*%\s*used/im);
-  const usedPercent = parsePercent(includedMatch?.[1]);
-  const resetMatch = cleaned.match(/\bResets\s+(\d{1,2}\s+[A-Za-z]{3,9}(?:\s+(?:19|20)\d{2})?)\b/);
-  const resetsAt = resetMatch?.[1]
-    ? parseCursorResetsAtIso(input.checkedAt, resetMatch[1])
-    : undefined;
+  const rows = parseCursorUsageRows(cleaned);
+  const resetMatch = cleaned.match(
+    /\bResets\s+(?:(\d{1,2}\s+[A-Za-z]{3,9})|([A-Za-z]{3,9}\s+\d{1,2}))(?:\s+((?:19|20)\d{2}))?\b/,
+  );
+  const resetText = [resetMatch?.[1] ?? resetMatch?.[2], resetMatch?.[3]].filter(Boolean).join(" ");
+  const resetsAt = resetText ? parseCursorResetsAtIso(input.checkedAt, resetText) : undefined;
 
-  if (usedPercent !== undefined) {
+  if (rows.length > 0) {
     return makeUsageLimitsSnapshot({
       source: "cursorStatusProbe",
       checkedAt: input.checkedAt,
-      windows: [
-        {
-          label: "Included",
-          usedPercent,
-          windowDurationMins: CURSOR_INCLUDED_WINDOW_DURATION_MINS,
-          ...(resetsAt ? { resetsAt } : {}),
-        },
-      ],
+      windows: rows.map((row) => ({
+        label: row.label,
+        usedPercent: row.usedPercent,
+        windowDurationMins: CURSOR_MONTHLY_WINDOW_DURATION_MINS,
+        ...(resetsAt ? { resetsAt } : {}),
+      })),
       unavailableReason: "Could not read usage limits for this Cursor account.",
     });
   }
@@ -107,32 +144,96 @@ export function parseCursorUsageLimitsOutput(input: {
   });
 }
 
+function isCursorUsageTableComplete(output: string, parsed: ServerProviderUsageLimits): boolean {
+  const cleaned = stripAnsi(output);
+  return (
+    /\bOn-Demand\b/i.test(cleaned) ||
+    parsed.windows.some((window) => window.label === "Auto" || window.label === "API")
+  );
+}
+
+function isCursorComposerReady(output: string): boolean {
+  const cleaned = stripAnsi(output);
+  // Wide PTYs (this probe is 120 cols) use "Run a command — e.g., dir" on
+  // Windows instead of the empty-chat "Plan, search, build anything" copy.
+  return (
+    /Plan, search, build anything/i.test(cleaned) ||
+    /Add a follow-up/i.test(cleaned) ||
+    /Run a command/i.test(cleaned) ||
+    /Tip: Use \/debug/i.test(cleaned)
+  );
+}
+
 function runCursorUsageProbeLoop(
   child: PtyAdapter.PtyProcess,
   input: CursorUsageProbeInput,
   clock: ProbeClock,
 ): Promise<CursorUsageProbeResult> {
+  let usageAttempts = 0;
+  let readyTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const clearTimer = (timer: ReturnType<typeof setTimeout> | undefined) => {
+    if (timer === undefined) {
+      return undefined;
+    }
+    clock.clearTimeout(timer);
+    return undefined;
+  };
+
+  const clearSendTimers = () => {
+    readyTimer = clearTimer(readyTimer);
+    retryTimer = clearTimer(retryTimer);
+  };
+
+  const sendUsage = () => {
+    if (usageAttempts >= CURSOR_USAGE_COMMAND_MAX_ATTEMPTS) {
+      return;
+    }
+    if (usageAttempts > 0) {
+      child.write("\x1b");
+    }
+    child.write("/usage\r");
+    usageAttempts += 1;
+    retryTimer = clearTimer(retryTimer);
+    if (usageAttempts < CURSOR_USAGE_COMMAND_MAX_ATTEMPTS) {
+      retryTimer = clock.setTimeout(() => {
+        retryTimer = undefined;
+        sendUsage();
+      }, CURSOR_USAGE_COMMAND_RETRY_MS);
+    }
+  };
+
   return collectPtyProbeOutput({
     child,
     clock,
     timeoutMs: CURSOR_USAGE_PROBE_TIMEOUT_MS,
-    onStart: () => child.write("/usage\r"),
-    resend: {
-      send: () => child.write("/usage\r"),
-      everyMs: CURSOR_USAGE_COMMAND_RESEND_MS,
-      maxAttempts: CURSOR_USAGE_COMMAND_MAX_RESENDS,
-    },
     decideAfterOutput: (rawOutput) => {
       const parsed = parseCursorUsageLimitsOutput({
         output: rawOutput,
         checkedAt: input.checkedAt,
       });
-      if (parsed.available && parsed.windows.every((window) => window.resetsAt)) {
+      const loading = /Loading usage data/i.test(stripAnsi(rawOutput));
+      if (parsed.available && isCursorUsageTableComplete(rawOutput, parsed)) {
+        clearSendTimers();
         return "finish";
       }
+      if (loading) {
+        clearSendTimers();
+        return "continue";
+      }
+
+      if (usageAttempts === 0 && readyTimer === undefined && isCursorComposerReady(rawOutput)) {
+        readyTimer = clock.setTimeout(() => {
+          readyTimer = undefined;
+          sendUsage();
+        }, CURSOR_USAGE_COMMAND_READY_DELAY_MS);
+      }
+
       return parsed.available ? { settleAfterMs: CURSOR_USAGE_OUTPUT_SETTLE_MS } : "continue";
     },
   }).then((rawOutput) => {
+    clearSendTimers();
     return {
       usageLimits: parseCursorUsageLimitsOutput({
         output: rawOutput,
@@ -149,10 +250,14 @@ export function probeCursorUsageLimits(
   clock: ProbeClock = defaultProbeClock,
 ): Effect.Effect<CursorUsageProbeResult> {
   return Effect.gen(function* () {
-    const environment = input.environment ?? process.env;
+    const environment = {
+      ...(input.environment ?? process.env),
+      FORCE_COLOR: "1",
+    };
+    delete environment.CI;
     const command = yield* resolvePtyProbeCommand(
       input.binaryPath,
-      input.apiEndpoint ? ["-e", input.apiEndpoint] : [],
+      ["--trust", ...(input.apiEndpoint ? ["-e", input.apiEndpoint] : [])],
       environment,
     );
     const child = yield* ptyAdapter

@@ -75,7 +75,8 @@ function createFakeClock(): ProbeClock & { advance(ms: number): void } {
     setTimeout,
     clearTimeout,
     advance(ms) {
-      for (const timer of timers) {
+      const due = timers.filter((entry) => !entry.cancelled);
+      for (const timer of due) {
         if (timer.cancelled) continue;
         timer.ms -= ms;
         if (timer.ms <= 0) {
@@ -86,6 +87,13 @@ function createFakeClock(): ProbeClock & { advance(ms: number): void } {
     },
   };
 }
+
+const COMPOSER_READY = `
+  Cursor Agent
+  v2026.08.11-e8db854
+  Tip: Use /debug to instrument and debug complex problems.
+  → Plan, search, build anything
+`;
 
 const SAMPLE_OUTPUT = `
  Usage • Free                                                                         Resets 7 Aug
@@ -105,7 +113,7 @@ const SAMPLE_OUTPUT = `
 `;
 
 describe("cursorUsageProbe", () => {
-  it("parses the included percent and reset date from Cursor's /usage panel", () => {
+  it("parses Included, Auto, and API percents plus the reset date", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-07-25T12:00:00.000Z",
       output: SAMPLE_OUTPUT,
@@ -113,26 +121,103 @@ describe("cursorUsageProbe", () => {
 
     expect(parsed.available).toBe(true);
     expect(parsed.source).toBe("cursorStatusProbe");
-    expect(parsed.windows).toHaveLength(1);
-    expect(parsed.windows[0]).toMatchObject({
-      label: "Included",
-      usedPercent: 23,
-      windowDurationMins: 30 * 24 * 60,
-    });
-    expect(parsed.windows[0]?.resetsAt).toBe("2026-08-07T00:00:00.000Z");
+    expect(parsed.windows).toEqual([
+      {
+        kind: "weekly",
+        label: "Included",
+        usedPercent: 23,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-08-07T00:00:00.000Z",
+      },
+      {
+        kind: "weekly",
+        label: "Auto",
+        usedPercent: 10,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-08-07T00:00:00.000Z",
+      },
+      {
+        kind: "weekly",
+        label: "API",
+        usedPercent: 13,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-08-07T00:00:00.000Z",
+      },
+    ]);
   });
 
-  it("does not mistake the indented Auto/API sub-rows for the Included row", () => {
+  it("parses Cursor Pro /usage with a Sept reset and a zero API bar", () => {
+    const parsed = parseCursorUsageLimitsOutput({
+      checkedAt: "2026-08-16T12:00:00.000Z",
+      output: `
+ Usage • Pro                                                                                                                               Resets 16 Sept
+ Monthly plan and on-demand usage
+
+ Category        Current             Usage
+ Included        2% used             ██░░░░░░░░
+   Auto          2% used             ███░░░░░░░
+   API           0% used             ░░░░░░░░░░
+`,
+    });
+
+    expect(parsed.windows).toEqual([
+      {
+        kind: "weekly",
+        label: "Included",
+        usedPercent: 2,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-09-16T00:00:00.000Z",
+      },
+      {
+        kind: "weekly",
+        label: "Auto",
+        usedPercent: 2,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-09-16T00:00:00.000Z",
+      },
+      {
+        kind: "weekly",
+        label: "API",
+        usedPercent: 0,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-09-16T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("parses the compact colon layout Ink uses on a narrow PTY", () => {
+    const parsed = parseCursorUsageLimitsOutput({
+      checkedAt: "2026-08-16T12:00:00.000Z",
+      output:
+        "Usage • Pro  Resets Sep 16\nIncluded: 2% used\nAuto: 2% used\nAPI: 0% used\nOn-Demand: Disabled",
+    });
+
+    expect(parsed.windows.map((window) => [window.label, window.usedPercent])).toEqual([
+      ["Included", 2],
+      ["Auto", 2],
+      ["API", 0],
+    ]);
+    expect(parsed.windows[0]?.resetsAt).toBe("2026-09-16T00:00:00.000Z");
+  });
+
+  it("still reads Included when Auto/API rows are missing", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-07-25T12:00:00.000Z",
-      output: SAMPLE_OUTPUT,
+      output: "Usage • Free   Resets 7 Aug\nIncluded  23% used  ░░░",
     });
 
-    expect(parsed.windows[0]?.usedPercent).not.toBe(10);
-    expect(parsed.windows[0]?.usedPercent).not.toBe(13);
+    expect(parsed.windows).toEqual([
+      {
+        kind: "weekly",
+        label: "Included",
+        usedPercent: 23,
+        windowDurationMins: 30 * 24 * 60,
+        resetsAt: "2026-08-07T00:00:00.000Z",
+      },
+    ]);
   });
 
-  it("returns unavailable when the Included row is absent", () => {
+  it("returns unavailable when no percent rows are present", () => {
     expect(
       parseCursorUsageLimitsOutput({
         checkedAt: "2026-07-25T12:00:00.000Z",
@@ -165,24 +250,75 @@ describe("cursorUsageProbe", () => {
     expect(parsed.windows[0]?.resetsAt).toBe("2026-07-10T00:00:00.000Z");
   });
 
-  it.effect("writes /usage and settles after output stabilizes using the default probe clock", () =>
+  it.effect("writes /usage after the composer is ready, not during the splash", () =>
     Effect.gen(function* () {
       const child = new MockPtyChild();
-      child.onWrite = () => {
-        child.emitData(SAMPLE_OUTPUT);
+      const clock = createFakeClock();
+      child.onWrite = (data) => {
+        if (data === "/usage\r") {
+          child.emitData(SAMPLE_OUTPUT);
+        }
       };
       const ptyAdapter: PtyAdapter.PtyAdapter["Service"] = {
         spawn: () => Effect.succeed(child),
       };
-
-      const result = yield* probeCursorUsageLimitsOnLinux(
-        { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-07-25T12:00:00.000Z" },
-        ptyAdapter,
+      const resultFiber = yield* Effect.forkChild(
+        probeCursorUsageLimitsOnLinux(
+          { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-07-25T12:00:00.000Z" },
+          ptyAdapter,
+          clock,
+        ),
+        { startImmediately: true },
       );
 
-      expect(result.usageLimits.windows[0]?.usedPercent).toBe(23);
+      expect(child.writes).toEqual([]);
+      child.emitData(COMPOSER_READY);
+      expect(child.writes).toEqual([]);
+      clock.advance(799);
+      expect(child.writes).toEqual([]);
+      clock.advance(1);
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(
+        result.usageLimits.windows.map((window) => [window.label, window.usedPercent]),
+      ).toEqual([
+        ["Included", 23],
+        ["Auto", 10],
+        ["API", 13],
+      ]);
       expect(child.writes).toEqual(["/usage\r"]);
       expect(child.killed).toBe(true);
+    }),
+  );
+
+  it.effect("treats the wide-PTY Run a command placeholder as composer-ready", () =>
+    Effect.gen(function* () {
+      const child = new MockPtyChild();
+      const clock = createFakeClock();
+      child.onWrite = (data) => {
+        if (data === "/usage\r") {
+          child.emitData(SAMPLE_OUTPUT);
+        }
+      };
+      const ptyAdapter: PtyAdapter.PtyAdapter["Service"] = {
+        spawn: () => Effect.succeed(child),
+      };
+      const resultFiber = yield* Effect.forkChild(
+        probeCursorUsageLimitsOnLinux(
+          { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-07-25T12:00:00.000Z" },
+          ptyAdapter,
+          clock,
+        ),
+        { startImmediately: true },
+      );
+
+      child.emitData("Cursor Agent\n→ Run a command — e.g., dir\n");
+      expect(child.writes).toEqual([]);
+      clock.advance(800);
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(result.usageLimits.available).toBe(true);
+      expect(child.writes).toEqual(["/usage\r"]);
     }),
   );
 
@@ -210,7 +346,7 @@ describe("cursorUsageProbe", () => {
         { startImmediately: true },
       );
 
-      expect(spawnInput?.args).toEqual(["-e", "https://example.com"]);
+      expect(spawnInput?.args).toEqual(["--trust", "-e", "https://example.com"]);
     }),
   );
 
@@ -239,6 +375,114 @@ describe("cursorUsageProbe", () => {
       expect(result.usageLimits).toMatchObject({ available: true });
       expect(result.usageLimits.windows[0]?.resetsAt).toBeUndefined();
       expect(child.killed).toBe(true);
+    }),
+  );
+
+  it.effect("does not finish on Included+Resets until Auto or API arrives", () =>
+    Effect.gen(function* () {
+      const child = new MockPtyChild();
+      const clock = createFakeClock();
+      const ptyAdapter: PtyAdapter.PtyAdapter["Service"] = {
+        spawn: () => Effect.succeed(child),
+      };
+      const resultFiber = yield* Effect.forkChild(
+        probeCursorUsageLimitsOnLinux(
+          { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-08-16T12:00:00.000Z" },
+          ptyAdapter,
+          clock,
+        ),
+        { startImmediately: true },
+      );
+
+      child.emitData("Usage • Pro  Resets 16 Sept\nIncluded  2% used\n");
+      expect(child.killed).toBe(false);
+      child.emitData("  Auto  2% used\n  API  0% used\n");
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(
+        result.usageLimits.windows.map((window) => [window.label, window.usedPercent]),
+      ).toEqual([
+        ["Included", 2],
+        ["Auto", 2],
+        ["API", 0],
+      ]);
+      expect(result.usageLimits.windows[0]?.resetsAt).toBe("2026-09-16T00:00:00.000Z");
+      expect(child.killed).toBe(true);
+    }),
+  );
+
+  it.effect("retries /usage after the slash palette misses during boot", () =>
+    Effect.gen(function* () {
+      const child = new MockPtyChild();
+      const clock = createFakeClock();
+      child.onWrite = (data) => {
+        if (
+          data === "/usage\r" &&
+          child.writes.filter((write) => write === "/usage\r").length >= 2
+        ) {
+          child.emitData(SAMPLE_OUTPUT);
+        }
+      };
+      const ptyAdapter: PtyAdapter.PtyAdapter["Service"] = {
+        spawn: () => Effect.succeed(child),
+      };
+      const resultFiber = yield* Effect.forkChild(
+        probeCursorUsageLimitsOnLinux(
+          { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-07-25T12:00:00.000Z" },
+          ptyAdapter,
+          clock,
+        ),
+        { startImmediately: true },
+      );
+
+      child.emitData(COMPOSER_READY);
+      expect(child.writes).toEqual([]);
+      clock.advance(800);
+      expect(child.writes).toEqual(["/usage\r"]);
+      child.emitData("     No matches\n");
+      clock.advance(1_499);
+      expect(child.writes).toEqual(["/usage\r"]);
+      clock.advance(1);
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(child.writes).toEqual(["/usage\r", "\x1b", "/usage\r"]);
+      expect(result.usageLimits.available).toBe(true);
+      expect(child.killed).toBe(true);
+    }),
+  );
+
+  it.effect("retries /usage on a timer even when the TUI emits nothing after the first send", () =>
+    Effect.gen(function* () {
+      const child = new MockPtyChild();
+      const clock = createFakeClock();
+      child.onWrite = (data) => {
+        if (
+          data === "/usage\r" &&
+          child.writes.filter((write) => write === "/usage\r").length >= 2
+        ) {
+          child.emitData(SAMPLE_OUTPUT);
+        }
+      };
+      const ptyAdapter: PtyAdapter.PtyAdapter["Service"] = {
+        spawn: () => Effect.succeed(child),
+      };
+      const resultFiber = yield* Effect.forkChild(
+        probeCursorUsageLimitsOnLinux(
+          { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-07-25T12:00:00.000Z" },
+          ptyAdapter,
+          clock,
+        ),
+        { startImmediately: true },
+      );
+
+      child.emitData(COMPOSER_READY);
+      clock.advance(800);
+      expect(child.writes).toEqual(["/usage\r"]);
+      clock.advance(1_500);
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(child.writes).toEqual(["/usage\r", "\x1b", "/usage\r"]);
+      expect(result.usageLimits.available).toBe(true);
     }),
   );
 });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import { vi } from "vite-plus/test";
 
 import * as PtyAdapter from "../terminal/PtyAdapter.ts";
@@ -250,8 +252,73 @@ describe("claudeUsageProbe", () => {
       }),
     ).toMatchObject({
       available: true,
-      windows: [{ kind: "session", usedPercent: 54, windowDurationMins: 300 }],
+      windows: [
+        {
+          kind: "session",
+          usedPercent: 54,
+          windowDurationMins: 300,
+          resetsAt: "2026-07-25T16:39:00.000Z",
+        },
+      ],
     });
+  });
+
+  // Captured from Claude Code 2.1.233. The contributing-stats block includes
+  // "Last 7d" and a 73% context line — those are not the weekly quota.
+  it("does not treat contributing Last 7d stats as a weekly quota window", () => {
+    const output = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      result: [
+        "You are currently using your subscription to power your Claude Code usage",
+        "",
+        "Current session: 10% used · resets Aug 16, 5:40pm (Asia/Kolkata)",
+        "",
+        "What's contributing to your limits usage?",
+        "Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.",
+        "",
+        "Last 24h · 454 requests · 3 sessions",
+        "  77% of your usage was at >150k context",
+        "",
+        "Last 7d · 1505 requests · 35 sessions",
+        "  73% of your usage was at >150k context",
+      ].join("\n"),
+    });
+
+    const parsed = parseClaudeUsageLimitsOutput({
+      checkedAt: "2026-08-16T08:30:00.000Z",
+      output,
+    });
+
+    expect(parsed.available).toBe(true);
+    expect(parsed.windows).toEqual([
+      {
+        kind: "session",
+        label: "Session",
+        usedPercent: 10,
+        windowDurationMins: 300,
+        resetsAt: "2026-08-16T12:10:00.000Z",
+      },
+    ]);
+  });
+
+  it("parses a yearless reset without a timezone as a host-local wall clock", () => {
+    const parsed = parseClaudeUsageLimitsOutput({
+      checkedAt: "2026-08-16T08:30:00.000Z",
+      output: "Current session: 10% used · resets Aug 16, 5:40pm",
+    });
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const expected = DateTime.makeZoned("2026-08-16 17:40:00", {
+      timeZone,
+      adjustForTimeZone: true,
+    });
+
+    expect(parsed.windows).toHaveLength(1);
+    expect(parsed.windows[0]?.usedPercent).toBe(10);
+    expect(Option.isSome(expected)).toBe(true);
+    if (Option.isSome(expected)) {
+      expect(parsed.windows[0]?.resetsAt).toBe(DateTime.formatIso(expected.value));
+    }
   });
 
   it("parses Claude print-mode JSON with current session and week labels", () => {

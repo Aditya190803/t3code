@@ -3,14 +3,13 @@
  * runtime events into the owning instance's published snapshot.
  *
  * Claude and Codex both push rate-limit updates over their session runtime
- * while a turn streams. Without this consumer those events had no subscriber:
- * Settings only ever showed usage as of the last status probe, so the bars sat
- * stale for a whole refresh interval after the turn that moved them.
- *
- * The write path is `ServerProviderShape.applyUsageLimits`, which patches only
- * `usageLimits` and republishes on the instance's own PubSub — the aggregation
- * in `ProviderRegistry` is already subscribed to that stream, so no extra
- * fan-out wiring is needed here.
+ * while a turn streams. Without this consumer those events had no subscriber,
+ * so quota bars sat stale for a whole refresh interval after the turn that
+ * moved them. The write path is `ServerProviderShape.applyUsageLimits`, which
+ * patches only `usageLimits` and republishes on the instance's own PubSub —
+ * the aggregation in `ProviderRegistry` is already subscribed to that stream,
+ * so no extra fan-out wiring is needed here. The Usage page reads those
+ * snapshots.
  *
  * @module provider/Layers/ProviderUsageLimitsIngestion
  */

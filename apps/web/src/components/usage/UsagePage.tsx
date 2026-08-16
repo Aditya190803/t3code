@@ -26,6 +26,7 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadc
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { UsageChartLegend, UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { ProviderQuotaLimitsSection } from "./ProviderQuotaLimits";
 
 const WINDOW_OPTIONS = [
   { days: 1, label: "Past 24h" },
@@ -167,6 +168,8 @@ export function UsagePage() {
                 </Button>
               </div>
             </div>
+
+            <ProviderQuotaLimitsSection />
 
             {settling ? (
               <>

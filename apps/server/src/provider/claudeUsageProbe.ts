@@ -62,7 +62,7 @@ function parsePercent(value: string | undefined): number | undefined {
 
 function inferWindowDurationMins(value: string): number | undefined {
   const lower = value.toLowerCase();
-  if (/\bweek(?:ly)?\b|\b7\s*(?:d|day|days)\b/.test(lower)) {
+  if (/\bweek(?:ly)?\b|\b7[\s-]*(?:day|days)\b/.test(lower)) {
     return 7 * 24 * 60;
   }
   if (/\b5\s*(?:h|hr|hrs|hour|hours)\b|\bsession\b/.test(lower)) {
@@ -72,11 +72,18 @@ function inferWindowDurationMins(value: string): number | undefined {
 }
 
 function detectClaudeUsageWindowKind(value: string): "session" | "weekly" | undefined {
-  const lower = value.toLowerCase();
-  if (/\bweek(?:ly)?\b|\b7\s*(?:d|day|days)\b/.test(lower)) {
+  const lower = value.toLowerCase().trim();
+  // Print-mode appends a contributing-stats block ("Last 7d · N requests",
+  // "73% of your usage was at >150k context"). That is not a quota window.
+  if (/^last\s+\d/.test(lower)) {
+    return undefined;
+  }
+  if (/\bcurrent week\b|\bweek(?:ly)?(?:\s+usage)?\b|\b7[\s-]*(?:day|days)\b/.test(lower)) {
     return "weekly";
   }
-  if (/\b5\s*(?:h|hr|hrs|hour|hours)\b|\bsession\b/.test(lower)) {
+  if (
+    /\bcurrent session\b|\bsession usage\b|\b5\s*(?:h|hr|hrs|hour|hours)\b|\bsession\b/.test(lower)
+  ) {
     return "session";
   }
   return undefined;
@@ -133,6 +140,38 @@ function toCanonicalLocalDateTime(text: string, year: number): string | undefine
   ).padStart(2, "0")}:${minute}:00`;
 }
 
+function hostTimeZoneId(): string | undefined {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone?.trim();
+    return zone && zone.length > 0 ? zone : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCanonicalReset(
+  text: string,
+  checkedAt: string,
+  timeZone: string | undefined,
+): string | undefined {
+  const hasExplicitYear = /\b(?:19|20)\d{2}\b/.test(text);
+  const year = hasExplicitYear
+    ? Number.parseInt(text.match(/\b((?:19|20)\d{2})\b/)![1]!, 10)
+    : Number.parseInt(checkedAt.slice(0, 4), 10);
+  const canonical = Number.isFinite(year) ? toCanonicalLocalDateTime(text, year) : undefined;
+  if (!canonical) return undefined;
+  if (timeZone) {
+    const zoned = DateTime.makeZoned(canonical, { timeZone, adjustForTimeZone: true });
+    return Option.isSome(zoned)
+      ? DateTime.formatIso(rollResetYearForward(zoned.value, checkedAt, hasExplicitYear))
+      : undefined;
+  }
+  const utc = DateTime.make(canonical);
+  return Option.isSome(utc)
+    ? DateTime.formatIso(rollResetYearForward(utc.value, checkedAt, hasExplicitYear))
+    : undefined;
+}
+
 function extractResetTimestamp(value: string, checkedAt: string): string | undefined {
   const resetMatch = value.match(/\breset(?:s|ting)?(?:\s+(?:at|on|in))?[:\s-]*([^\n.;]+)/i);
   const rawCandidate = resetMatch?.[1]
@@ -152,30 +191,26 @@ function extractResetTimestamp(value: string, checkedAt: string): string | undef
   const ianaZoneMatch = candidate.match(IANA_TIMEZONE_PATTERN);
   const ianaZoneId = ianaZoneMatch?.[1];
   if (ianaZoneMatch?.index !== undefined && ianaZoneId) {
-    const withoutZone = candidate.slice(0, ianaZoneMatch.index).trim();
-    const hasExplicitYear = /\b(?:19|20)\d{2}\b/.test(withoutZone);
-    const year = hasExplicitYear
-      ? Number.parseInt(withoutZone.match(/\b((?:19|20)\d{2})\b/)![1]!, 10)
-      : Number.parseInt(checkedAt.slice(0, 4), 10);
-    const canonical = Number.isFinite(year)
-      ? toCanonicalLocalDateTime(withoutZone, year)
-      : undefined;
-    if (!canonical) return undefined;
-    const dt = DateTime.makeZoned(canonical, { timeZone: ianaZoneId, adjustForTimeZone: true });
-    return Option.isSome(dt)
-      ? DateTime.formatIso(rollResetYearForward(dt.value, checkedAt, hasExplicitYear))
-      : undefined;
+    return parseCanonicalReset(
+      candidate.slice(0, ianaZoneMatch.index).trim(),
+      checkedAt,
+      ianaZoneId,
+    );
   }
 
   const hasExplicitOffset =
     /\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?z\b|[+-]\d{2}:?\d{2}|\b(?:utc|gmt|p[sd]t|m[sd]t|c[sd]t|e[sd]t)\b/i.test(
       candidate,
     );
-  if (!hasExplicitOffset) {
-    return undefined;
+  if (hasExplicitOffset) {
+    const dt = DateTime.make(candidate);
+    return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
   }
-  const dt = DateTime.make(candidate);
-  return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
+
+  // Current print-mode still uses "Mon D, h:mmapm" and sometimes drops the
+  // parenthesized IANA zone. That wall clock is local to the machine running
+  // the probe.
+  return parseCanonicalReset(candidate, checkedAt, hostTimeZoneId());
 }
 
 function parseClaudeUsageWindowSegment(
