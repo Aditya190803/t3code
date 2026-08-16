@@ -17,6 +17,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { applyRuntimeUsageLimits } from "./providerUsageLimits.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 
 interface ProviderSnapshotState {
@@ -109,6 +110,35 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
     yield* Ref.set(enrichmentFiberRef, fiber);
   });
+
+  /**
+   * Runtime usage updates arrive between probes and must not disturb the
+   * enrichment generation: they patch only `usageLimits` on whatever snapshot
+   * is currently published, and publish again only when that actually changed.
+   */
+  const applyUsageLimits: ServerProviderShape["applyUsageLimits"] = (update) =>
+    Effect.gen(function* () {
+      const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+        const nextUsageLimits = applyRuntimeUsageLimits({
+          previous: state.snapshot.usageLimits,
+          source: update.source,
+          checkedAt: update.checkedAt,
+          windows: update.windows,
+        });
+        if (
+          nextUsageLimits === undefined ||
+          Equal.equals(state.snapshot.usageLimits, nextUsageLimits)
+        ) {
+          return [null, state] as const;
+        }
+        const nextSnapshot = { ...state.snapshot, usageLimits: nextUsageLimits };
+        return [nextSnapshot, { ...state, snapshot: nextSnapshot }] as const;
+      });
+      if (snapshotToPublish === null) {
+        return;
+      }
+      yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    });
 
   const applySnapshotBase = Effect.fn("applySnapshot")(function* (
     nextSettings: Settings,
@@ -222,6 +252,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     maintenanceCapabilities: input.maintenanceCapabilities,
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
+    applyUsageLimits,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
