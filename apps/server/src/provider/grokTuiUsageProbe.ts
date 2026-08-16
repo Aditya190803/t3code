@@ -141,10 +141,21 @@ function runGrokUsageProbeLoop(
 
 export function probeGrokUsageLimits(
   input: GrokUsageProbeInput,
-  ptyAdapter: PtyAdapter.PtyAdapter["Service"],
   clock: ProbeClock = defaultProbeClock,
 ): Effect.Effect<GrokUsageProbeResult> {
   return Effect.gen(function* () {
+    const ptyAdapter = Option.getOrUndefined(yield* Effect.serviceOption(PtyAdapter.PtyAdapter));
+    if (!ptyAdapter) {
+      return {
+        usageLimits: makeUnavailableUsageLimits({
+          source: "grokStatusProbe",
+          checkedAt: input.checkedAt,
+          reason: "Usage limits unavailable for this Grok instance in the current runtime.",
+        }),
+        rawOutput: "",
+      };
+    }
+
     const environment = input.environment ?? process.env;
     const command = yield* resolvePtyProbeCommand(input.binaryPath, [], environment);
     const child = yield* ptyAdapter

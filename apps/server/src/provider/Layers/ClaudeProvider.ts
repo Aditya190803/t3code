@@ -44,7 +44,6 @@ import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
 import { probeClaudeUsageLimits } from "../claudeUsageProbe.ts";
 import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
-import * as PtyAdapter from "../../terminal/PtyAdapter.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -814,7 +813,6 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment?: NodeJS.ProcessEnv,
   cwd = process.cwd(),
-  ptyAdapter?: PtyAdapter.PtyAdapter["Service"],
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -946,22 +944,13 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt,
           reason: "Usage limits unavailable for Claude API key accounts.",
         })
-      : ptyAdapter
-        ? yield* probeClaudeUsageLimits(
-            {
-              binaryPath: claudeSettings.binaryPath,
-              launchArgs: claudeSettings.launchArgs,
-              cwd,
-              checkedAt,
-              environment: yield* makeClaudeEnvironment(claudeSettings, environment),
-            },
-            ptyAdapter,
-          ).pipe(Effect.map((result) => result.usageLimits))
-        : makeUnavailableUsageLimits({
-            source: "claudeStatusProbe",
-            checkedAt,
-            reason: "Usage limits are unavailable in this runtime.",
-          });
+      : yield* probeClaudeUsageLimits({
+          binaryPath: claudeSettings.binaryPath,
+          launchArgs: claudeSettings.launchArgs,
+          cwd,
+          checkedAt,
+          environment: yield* makeClaudeEnvironment(claudeSettings, environment),
+        }).pipe(Effect.map((result) => result.usageLimits));
 
   if (!capabilities) {
     return buildServerProvider({

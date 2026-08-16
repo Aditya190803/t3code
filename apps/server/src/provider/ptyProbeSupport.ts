@@ -51,11 +51,16 @@ export const resolvePtyProbeCommand = Effect.fn("resolvePtyProbeCommand")(functi
 /**
  * Matches common CSI / OSC ANSI escape sequences emitted by interactive CLI
  * output. Shared by every PTY-backed usage probe.
+ *
+ * OSC bodies must not span ESC. A greedy `[^\x07]*` until the last `ESC \`
+ * in the stream swallows later Ink frames — Cursor's `/usage` panel is
+ * bookended by OSC-8 hyperlinks, which is how Auto/API rows disappeared
+ * after a successful scrape.
  */
 const ESCAPE_CHAR = String.fromCharCode(27);
 const BEL_CHAR = String.fromCharCode(7);
 const ANSI_PATTERN = new RegExp(
-  `${ESCAPE_CHAR}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL_CHAR}]*(?:${BEL_CHAR}|${ESCAPE_CHAR}\\\\))`,
+  `${ESCAPE_CHAR}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL_CHAR}${ESCAPE_CHAR}]*(?:${BEL_CHAR}|${ESCAPE_CHAR}\\\\))`,
   "g",
 );
 

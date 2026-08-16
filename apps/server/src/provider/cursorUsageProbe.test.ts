@@ -16,8 +16,15 @@ import {
  * Binary resolution is platform-dependent, so pin the platform rather than
  * letting assertions depend on whichever OS the suite happens to run on.
  */
-const probeCursorUsageLimitsOnLinux = (...args: Parameters<typeof probeCursorUsageLimits>) =>
-  probeCursorUsageLimits(...args).pipe(Effect.provideService(HostProcessPlatform, "linux"));
+const probeCursorUsageLimitsOnLinux = (
+  input: Parameters<typeof probeCursorUsageLimits>[0],
+  ptyAdapter: PtyAdapter.PtyAdapter["Service"],
+  clock?: ProbeClock,
+) =>
+  probeCursorUsageLimits(input, clock).pipe(
+    Effect.provideService(HostProcessPlatform, "linux"),
+    Effect.provideService(PtyAdapter.PtyAdapter, ptyAdapter),
+  );
 
 class MockPtyChild implements PtyAdapter.PtyProcess {
   public readonly writes: string[] = [];
@@ -113,7 +120,7 @@ const SAMPLE_OUTPUT = `
 `;
 
 describe("cursorUsageProbe", () => {
-  it("parses Included, Auto, and API percents plus the reset date", () => {
+  it("parses Auto and API percents plus the reset date", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-07-25T12:00:00.000Z",
       output: SAMPLE_OUTPUT,
@@ -122,13 +129,6 @@ describe("cursorUsageProbe", () => {
     expect(parsed.available).toBe(true);
     expect(parsed.source).toBe("cursorStatusProbe");
     expect(parsed.windows).toEqual([
-      {
-        kind: "weekly",
-        label: "Included",
-        usedPercent: 23,
-        windowDurationMins: 30 * 24 * 60,
-        resetsAt: "2026-08-07T00:00:00.000Z",
-      },
       {
         kind: "weekly",
         label: "Auto",
@@ -163,13 +163,6 @@ describe("cursorUsageProbe", () => {
     expect(parsed.windows).toEqual([
       {
         kind: "weekly",
-        label: "Included",
-        usedPercent: 2,
-        windowDurationMins: 30 * 24 * 60,
-        resetsAt: "2026-09-16T00:00:00.000Z",
-      },
-      {
-        kind: "weekly",
         label: "Auto",
         usedPercent: 2,
         windowDurationMins: 30 * 24 * 60,
@@ -185,6 +178,40 @@ describe("cursorUsageProbe", () => {
     ]);
   });
 
+  it("parses OSC-8 hyperlink frames without dropping Auto, API, or the reset", () => {
+    const osc = String.fromCharCode(27);
+    const parsed = parseCursorUsageLimitsOutput({
+      checkedAt: "2026-08-16T12:00:00.000Z",
+      output: [
+        `${osc}]8;id=1;https://github.com/example/pull/1${osc}\\#1${osc}]8;;${osc}\\`,
+        `${osc}[36mLoading usage data...${osc}[m`,
+        `${osc}[1mUsage${osc}[m • Pro${osc}[91CResets 16 Sept`,
+        " Included        6% used",
+        `${osc}[2m  Auto${osc}[22m${osc}[10C7% used`,
+        `${osc}[2m  API${osc}[22m${osc}[11C0% used`,
+        `${osc}]8;id=2;https://cursor.com/dashboard?tab=usage${osc}\\cursor.com${osc}]8;;${osc}\\`,
+        "Esc to close",
+      ].join("\n"),
+    });
+
+    expect(
+      parsed.windows.map((window) => [window.label, window.usedPercent, window.resetsAt]),
+    ).toEqual([
+      ["Auto", 7, "2026-09-16T00:00:00.000Z"],
+      ["API", 0, "2026-09-16T00:00:00.000Z"],
+    ]);
+  });
+
+  it("reads a reset glued to the plan name after Ink cursor addressing", () => {
+    const parsed = parseCursorUsageLimitsOutput({
+      checkedAt: "2026-08-16T12:00:00.000Z",
+      output: "Usage • ProResets 16 Sept\nAuto  8% used\nAPI  0% used",
+    });
+
+    expect(parsed.windows[0]?.resetsAt).toBe("2026-09-16T00:00:00.000Z");
+    expect(parsed.windows.map((window) => window.label)).toEqual(["Auto", "API"]);
+  });
+
   it("parses the compact colon layout Ink uses on a narrow PTY", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-08-16T12:00:00.000Z",
@@ -193,28 +220,20 @@ describe("cursorUsageProbe", () => {
     });
 
     expect(parsed.windows.map((window) => [window.label, window.usedPercent])).toEqual([
-      ["Included", 2],
       ["Auto", 2],
       ["API", 0],
     ]);
     expect(parsed.windows[0]?.resetsAt).toBe("2026-09-16T00:00:00.000Z");
   });
 
-  it("still reads Included when Auto/API rows are missing", () => {
+  it("ignores the Included total when Auto and API are missing", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-07-25T12:00:00.000Z",
       output: "Usage • Free   Resets 7 Aug\nIncluded  23% used  ░░░",
     });
 
-    expect(parsed.windows).toEqual([
-      {
-        kind: "weekly",
-        label: "Included",
-        usedPercent: 23,
-        windowDurationMins: 30 * 24 * 60,
-        resetsAt: "2026-08-07T00:00:00.000Z",
-      },
-    ]);
+    expect(parsed.available).toBe(false);
+    expect(parsed.windows).toEqual([]);
   });
 
   it("returns unavailable when no percent rows are present", () => {
@@ -235,7 +254,7 @@ describe("cursorUsageProbe", () => {
   it("rolls the reset year forward when a year-less reset wraps into next year", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-12-30T12:00:00.000Z",
-      output: "Usage • Free   Resets 3 Jan\nIncluded  90% used  ░░░",
+      output: "Usage • Free   Resets 3 Jan\nAuto  90% used  ░░░",
     });
 
     expect(parsed.windows[0]?.resetsAt).toBe("2027-01-03T00:00:00.000Z");
@@ -244,7 +263,7 @@ describe("cursorUsageProbe", () => {
   it("does not roll a stale same-year reset forward", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-07-20T12:00:00.000Z",
-      output: "Usage • Free   Resets 10 Jul\nIncluded  90% used  ░░░",
+      output: "Usage • Free   Resets 10 Jul\nAuto  90% used  ░░░",
     });
 
     expect(parsed.windows[0]?.resetsAt).toBe("2026-07-10T00:00:00.000Z");
@@ -282,12 +301,50 @@ describe("cursorUsageProbe", () => {
       expect(
         result.usageLimits.windows.map((window) => [window.label, window.usedPercent]),
       ).toEqual([
-        ["Included", 23],
         ["Auto", 10],
         ["API", 13],
       ]);
       expect(child.writes).toEqual(["/usage\r"]);
       expect(child.killed).toBe(true);
+    }),
+  );
+
+  it.effect("accepts /usage from the slash palette instead of leaving it highlighted", () =>
+    Effect.gen(function* () {
+      const child = new MockPtyChild();
+      const clock = createFakeClock();
+      child.onWrite = (data) => {
+        if (data === "/usage\r") {
+          child.emitData("→ /usage  Show plan and on-demand usage\n");
+        }
+        if (data === "\r") {
+          child.emitData(SAMPLE_OUTPUT);
+        }
+      };
+      const ptyAdapter: PtyAdapter.PtyAdapter["Service"] = {
+        spawn: () => Effect.succeed(child),
+      };
+      const resultFiber = yield* Effect.forkChild(
+        probeCursorUsageLimitsOnLinux(
+          { binaryPath: "cursor-agent", cwd: "/tmp", checkedAt: "2026-07-25T12:00:00.000Z" },
+          ptyAdapter,
+          clock,
+        ),
+        { startImmediately: true },
+      );
+
+      child.emitData(COMPOSER_READY);
+      clock.advance(800);
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(child.writes).toEqual(["/usage\r", "\r"]);
+      expect(
+        result.usageLimits.windows.map((window) => [window.label, window.usedPercent]),
+      ).toEqual([
+        ["Auto", 10],
+        ["API", 13],
+      ]);
+      expect(result.usageLimits.windows[0]?.resetsAt).toBe("2026-08-07T00:00:00.000Z");
     }),
   );
 
@@ -350,7 +407,7 @@ describe("cursorUsageProbe", () => {
     }),
   );
 
-  it.effect("settles after utilization output when no reset line arrives", () =>
+  it.effect("settles Auto and API even when no reset line arrives", () =>
     Effect.gen(function* () {
       const child = new MockPtyChild();
       const clock = createFakeClock();
@@ -366,19 +423,17 @@ describe("cursorUsageProbe", () => {
         { startImmediately: true },
       );
 
-      child.emitData("Included  23% used  ░░░\n");
-      clock.advance(199);
-      expect(child.killed).toBe(false);
-      clock.advance(1);
+      child.emitData("Auto  10% used\nAPI  13% used\n");
 
       const result = yield* Fiber.join(resultFiber);
       expect(result.usageLimits).toMatchObject({ available: true });
+      expect(result.usageLimits.windows.map((window) => window.label)).toEqual(["Auto", "API"]);
       expect(result.usageLimits.windows[0]?.resetsAt).toBeUndefined();
       expect(child.killed).toBe(true);
     }),
   );
 
-  it.effect("does not finish on Included+Resets until Auto or API arrives", () =>
+  it.effect("does not finish on Included+Resets until Auto and API arrive", () =>
     Effect.gen(function* () {
       const child = new MockPtyChild();
       const clock = createFakeClock();
@@ -402,7 +457,6 @@ describe("cursorUsageProbe", () => {
       expect(
         result.usageLimits.windows.map((window) => [window.label, window.usedPercent]),
       ).toEqual([
-        ["Included", 2],
         ["Auto", 2],
         ["API", 0],
       ]);

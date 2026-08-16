@@ -1,4 +1,5 @@
 import type { ServerProviderUsageLimits } from "@t3tools/contracts";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -313,65 +314,6 @@ export function parseClaudeUsageLimitsOutput(input: {
   });
 }
 
-function splitLaunchArgs(launchArgs?: string): string[] {
-  if (!launchArgs?.trim()) {
-    return [];
-  }
-
-  const tokens: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaping = false;
-
-  const pushCurrent = () => {
-    if (current.length > 0) {
-      tokens.push(current);
-      current = "";
-    }
-  };
-
-  for (const character of launchArgs) {
-    if (escaping) {
-      current += character;
-      escaping = false;
-      continue;
-    }
-
-    if (character === "\\") {
-      escaping = true;
-      continue;
-    }
-
-    if (quote) {
-      if (character === quote) {
-        quote = null;
-      } else {
-        current += character;
-      }
-      continue;
-    }
-
-    if (character === "'" || character === '"') {
-      quote = character;
-      continue;
-    }
-
-    if (/\s/.test(character)) {
-      pushCurrent();
-      continue;
-    }
-
-    current += character;
-  }
-
-  if (escaping) {
-    current += "\\";
-  }
-
-  pushCurrent();
-  return tokens;
-}
-
 function runProbeLoop(
   child: PtyAdapter.PtyProcess,
   input: ClaudeUsageProbeInput,
@@ -394,11 +336,10 @@ function runProbeLoop(
 
 export function probeClaudeUsageLimits(
   input: ClaudeUsageProbeInput,
-  ptyAdapter: PtyAdapter.PtyAdapter["Service"],
   clock: ProbeClock = defaultProbeClock,
 ): Effect.Effect<ClaudeUsageProbeResult> {
   const probeArgs = [
-    ...splitLaunchArgs(input.launchArgs),
+    ...tokenizeCliArgs(input.launchArgs),
     "--print",
     "/usage",
     "--output-format",
@@ -408,6 +349,18 @@ export function probeClaudeUsageLimits(
   ];
 
   return Effect.gen(function* () {
+    const ptyAdapter = Option.getOrUndefined(yield* Effect.serviceOption(PtyAdapter.PtyAdapter));
+    if (!ptyAdapter) {
+      return {
+        usageLimits: makeUnavailableUsageLimits({
+          source: "claudeStatusProbe",
+          checkedAt: input.checkedAt,
+          reason: "Usage limits are unavailable in this runtime.",
+        }),
+        rawOutput: "",
+      };
+    }
+
     const environment = input.environment ?? process.env;
     const command = yield* resolvePtyProbeCommand(input.binaryPath, probeArgs, environment);
     const child = yield* ptyAdapter

@@ -1,5 +1,6 @@
 import type { ServerProviderAuth } from "@t3tools/contracts";
 
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 
 import type * as AcpSessionRuntime from "./acp/AcpSessionRuntime.ts";
@@ -63,6 +64,20 @@ export function grokAuthMetadata(
   };
 }
 
+/** Weekly `/usage` only exists on a paid Grok plan. Free-tier accounts still
+ * authenticate (Settings shows "Free") but have no quota windows to read. */
+const GROK_UNPAID_USAGE_TIERS = new Set(["free", "none", "unpaid"]);
+
+export function grokHasUsageSubscription(
+  probe: GrokAuthSubscriptionProbeResult | undefined,
+): boolean {
+  const tier = probe?.subscriptionTier?.trim();
+  if (!probe?.authenticated || !tier) {
+    return false;
+  }
+  return !GROK_UNPAID_USAGE_TIERS.has(tier.toLowerCase());
+}
+
 export function grokAuthFromSubscriptionProbe(
   probe: GrokAuthSubscriptionProbeResult,
 ): ServerProviderAuth {
@@ -86,10 +101,13 @@ export function probeGrokAuthViaAcp(input: {
     const authRaw = yield* input.runtime
       .request(GROK_AUTH_CHECK_SUBSCRIPTION_METHOD, { sessionId: input.sessionId })
       // Auth metadata is best-effort. This probe runs after model discovery has
-      // already succeeded on the same session, so *any* ACP failure (request,
-      // transport, protocol parse, process exit, stream end) must degrade to
-      // "no auth metadata" rather than discarding the discovered models.
-      .pipe(Effect.catch(() => Effect.void));
+      // already succeeded on the same session, so typed ACP failures *and*
+      // defects must degrade to "no auth metadata" rather than discarding the
+      // discovered models. Interrupts still propagate so a cancelled probe
+      // cannot finish as success.
+      .pipe(
+        Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void)),
+      );
 
     return parseGrokAuthCheckSubscription(authRaw);
   });

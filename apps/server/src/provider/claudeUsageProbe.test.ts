@@ -20,8 +20,15 @@ import {
  * Binary resolution is platform-dependent, so pin the platform rather than
  * letting assertions depend on whichever OS the suite happens to run on.
  */
-const probeClaudeUsageLimitsOnLinux = (...args: Parameters<typeof probeClaudeUsageLimits>) =>
-  probeClaudeUsageLimits(...args).pipe(Effect.provideService(HostProcessPlatform, "linux"));
+const probeClaudeUsageLimitsOnLinux = (
+  input: Parameters<typeof probeClaudeUsageLimits>[0],
+  ptyAdapter: PtyAdapter.PtyAdapter["Service"],
+  clock?: ProbeClock,
+) =>
+  probeClaudeUsageLimits(input, clock).pipe(
+    Effect.provideService(HostProcessPlatform, "linux"),
+    Effect.provideService(PtyAdapter.PtyAdapter, ptyAdapter),
+  );
 
 class MockPtyChild implements PtyAdapter.PtyProcess {
   public readonly writes: string[] = [];
@@ -538,6 +545,58 @@ describe("claudeUsageProbe", () => {
         "--permission-mode",
         "plan",
       ]);
+    }),
+  );
+
+  it.effect("preserves Windows paths in quoted launch arguments", () =>
+    Effect.gen(function* () {
+      const child = new MockPtyChild();
+      let capturedSpawnInput: PtyAdapter.PtySpawnInput | undefined;
+      const ptyAdapter = makeCapturingPtyAdapter({
+        child,
+        onSpawn: (spawnInput) => {
+          capturedSpawnInput = spawnInput;
+        },
+      });
+
+      const resultFiber = yield* Effect.forkChild(
+        probeClaudeUsageLimitsOnLinux(
+          {
+            binaryPath: "claude",
+            launchArgs: String.raw`--add-dir "C:\work\repo"`,
+            cwd: "/tmp",
+            checkedAt: "2026-04-17T10:00:00.000Z",
+          },
+          ptyAdapter,
+        ),
+        { startImmediately: true },
+      );
+
+      child.emitExit();
+      yield* Fiber.join(resultFiber);
+
+      expect(capturedSpawnInput?.args?.slice(0, 2)).toEqual([
+        "--add-dir",
+        String.raw`C:\work\repo`,
+      ]);
+    }),
+  );
+
+  it.effect("reports usage unavailable when no PTY adapter is in the environment", () =>
+    Effect.gen(function* () {
+      const result = yield* probeClaudeUsageLimits({
+        binaryPath: "claude",
+        cwd: "/tmp",
+        checkedAt: "2026-04-17T10:00:00.000Z",
+      }).pipe(Effect.provideService(HostProcessPlatform, "linux"));
+
+      expect(result.usageLimits).toEqual({
+        source: "claudeStatusProbe",
+        available: false,
+        reason: "Usage limits are unavailable in this runtime.",
+        checkedAt: "2026-04-17T10:00:00.000Z",
+        windows: [],
+      });
     }),
   );
 });

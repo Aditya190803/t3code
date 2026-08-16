@@ -33,12 +33,11 @@ import {
 import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
 import {
   grokAuthFromSubscriptionProbe,
+  grokHasUsageSubscription,
   probeGrokAuthViaAcp,
   type GrokAuthSubscriptionProbeResult,
 } from "../grokUsageProbe.ts";
 import { probeGrokUsageLimits } from "../grokTuiUsageProbe.ts";
-import * as PtyAdapter from "../../terminal/PtyAdapter.ts";
-import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
 const GROK_PRESENTATION = {
   displayName: "Grok",
   badgeLabel: "Early Access",
@@ -198,7 +197,6 @@ const runGrokVersionCommand = (
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
-  ptyAdapter?: PtyAdapter.PtyAdapter["Service"],
   cwd = process.cwd(),
 ): Effect.fn.Return<
   ServerProviderDraft,
@@ -336,24 +334,14 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       ? grokModelsFromSettings(grokSettings.customModels, discovery.models)
       : fallbackModels;
   const auth = resolveGrokProbeAuth(discovery.auth);
-  const usageLimits =
-    auth.status === "unauthenticated"
-      ? undefined
-      : ptyAdapter
-        ? yield* probeGrokUsageLimits(
-            {
-              binaryPath: grokSettings.binaryPath || "grok",
-              cwd,
-              checkedAt,
-              environment,
-            },
-            ptyAdapter,
-          ).pipe(Effect.map((result) => result.usageLimits))
-        : makeUnavailableUsageLimits({
-            source: "grokStatusProbe",
-            checkedAt,
-            reason: "Usage limits unavailable for this Grok instance in the current runtime.",
-          });
+  const usageLimits = !grokHasUsageSubscription(discovery.auth)
+    ? undefined
+    : yield* probeGrokUsageLimits({
+        binaryPath: grokSettings.binaryPath || "grok",
+        cwd,
+        checkedAt,
+        environment,
+      }).pipe(Effect.map((result) => result.usageLimits));
 
   if (auth.status === "unauthenticated") {
     return buildServerProvider({

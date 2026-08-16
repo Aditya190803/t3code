@@ -17,13 +17,14 @@ import { makeUnavailableUsageLimits, makeUsageLimitsSnapshot } from "./providerU
 export type { ProbeClock } from "./ptyProbeSupport.ts";
 
 const CURSOR_USAGE_PROBE_TIMEOUT_MS = 25_000;
-const CURSOR_USAGE_OUTPUT_SETTLE_MS = 200;
 /**
  * `/usage` is a slash command that is only registered after the TUI finishes
  * booting and the dashboard client is up. Typing it during the splash screen
  * opens the command palette with "No matches" and never paints the usage
  * pager. Wait for the composer, give the dashboard a beat to register the
- * command, then retry with Escape if the palette misses.
+ * command, then confirm the highlighted `/usage` match with Enter. A second
+ * Escape retry is only for a palette miss — confirming a hit with Enter is
+ * what actually opens Auto/API.
  *
  * Retries are scheduled from the send itself: if `/usage` is swallowed with
  * no further paint, waiting for the next `onData` would sit until timeout.
@@ -33,7 +34,7 @@ const CURSOR_USAGE_COMMAND_RETRY_MS = 1_500;
 const CURSOR_USAGE_COMMAND_MAX_ATTEMPTS = 4;
 /** Cursor's `/usage` window resets on a monthly cadence, not a fixed weekly one. */
 const CURSOR_MONTHLY_WINDOW_DURATION_MINS = 30 * 24 * 60;
-const CURSOR_USAGE_ROW_LABELS = ["Included", "Auto", "API"] as const;
+const CURSOR_USAGE_ROW_LABELS = ["Auto", "API"] as const;
 
 function isCursorUsageRowLabel(value: string): value is (typeof CURSOR_USAGE_ROW_LABELS)[number] {
   return (CURSOR_USAGE_ROW_LABELS as readonly string[]).includes(value);
@@ -94,9 +95,9 @@ function parseCursorUsageRows(cleaned: string): ReadonlyArray<{
   readonly usedPercent: number;
 }> {
   const rows = new Map<(typeof CURSOR_USAGE_ROW_LABELS)[number], number>();
-  // Ink may emit `Included  2% used` or the compact `Included: 2% used`, and
+  // Ink may emit `Auto  2% used` or the compact `Auto: 2% used`, and
   // cursor addressing often leaves no line start in front of the label.
-  const pattern = /\b(Included|Auto|API)\s*:?\s*(\d{1,3}(?:\.\d+)?)\s*%/gi;
+  const pattern = /\b(Auto|API)\s*:?\s*(\d{1,3}(?:\.\d+)?)\s*%/gi;
   for (const match of cleaned.matchAll(pattern)) {
     const label = match[1];
     const usedPercent = parsePercent(match[2]);
@@ -117,8 +118,10 @@ export function parseCursorUsageLimitsOutput(input: {
 }): ServerProviderUsageLimits {
   const cleaned = stripAnsi(input.output);
   const rows = parseCursorUsageRows(cleaned);
+  // Ink right-aligns the reset with CUF (`ESC [ n C`), so after stripping
+  // ANSI the header is often `Usage • ProResets 16 Sept` with no word break.
   const resetMatch = cleaned.match(
-    /\bResets\s+(?:(\d{1,2}\s+[A-Za-z]{3,9})|([A-Za-z]{3,9}\s+\d{1,2}))(?:\s+((?:19|20)\d{2}))?\b/,
+    /Resets\s+(?:(\d{1,2}\s+[A-Za-z]{3,9})|([A-Za-z]{3,9}\s+\d{1,2}))(?:\s+((?:19|20)\d{2}))?\b/,
   );
   const resetText = [resetMatch?.[1] ?? resetMatch?.[2], resetMatch?.[3]].filter(Boolean).join(" ");
   const resetsAt = resetText ? parseCursorResetsAtIso(input.checkedAt, resetText) : undefined;
@@ -144,12 +147,9 @@ export function parseCursorUsageLimitsOutput(input: {
   });
 }
 
-function isCursorUsageTableComplete(output: string, parsed: ServerProviderUsageLimits): boolean {
-  const cleaned = stripAnsi(output);
-  return (
-    /\bOn-Demand\b/i.test(cleaned) ||
-    parsed.windows.some((window) => window.label === "Auto" || window.label === "API")
-  );
+function isCursorUsageTableComplete(parsed: ServerProviderUsageLimits): boolean {
+  const labels = new Set(parsed.windows.map((window) => window.label));
+  return labels.has("Auto") && labels.has("API");
 }
 
 function isCursorComposerReady(output: string): boolean {
@@ -164,12 +164,18 @@ function isCursorComposerReady(output: string): boolean {
   );
 }
 
+function isCursorUsagePaletteReady(output: string): boolean {
+  const cleaned = stripAnsi(output);
+  return /Show plan and on-demand usage/i.test(cleaned);
+}
+
 function runCursorUsageProbeLoop(
   child: PtyAdapter.PtyProcess,
   input: CursorUsageProbeInput,
   clock: ProbeClock,
 ): Promise<CursorUsageProbeResult> {
   let usageAttempts = 0;
+  let acceptedUsage = false;
   let readyTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -193,8 +199,9 @@ function runCursorUsageProbeLoop(
     if (usageAttempts > 0) {
       child.write("\x1b");
     }
-    child.write("/usage\r");
     usageAttempts += 1;
+    acceptedUsage = false;
+    child.write("/usage\r");
     retryTimer = clearTimer(retryTimer);
     if (usageAttempts < CURSOR_USAGE_COMMAND_MAX_ATTEMPTS) {
       retryTimer = clock.setTimeout(() => {
@@ -202,6 +209,15 @@ function runCursorUsageProbeLoop(
         sendUsage();
       }, CURSOR_USAGE_COMMAND_RETRY_MS);
     }
+  };
+
+  const acceptUsage = () => {
+    if (acceptedUsage) {
+      return;
+    }
+    acceptedUsage = true;
+    retryTimer = clearTimer(retryTimer);
+    child.write("\r");
   };
 
   return collectPtyProbeOutput({
@@ -214,12 +230,17 @@ function runCursorUsageProbeLoop(
         checkedAt: input.checkedAt,
       });
       const loading = /Loading usage data/i.test(stripAnsi(rawOutput));
-      if (parsed.available && isCursorUsageTableComplete(rawOutput, parsed)) {
+      if (parsed.available && isCursorUsageTableComplete(parsed)) {
         clearSendTimers();
         return "finish";
       }
       if (loading) {
         clearSendTimers();
+        return "continue";
+      }
+
+      if (usageAttempts > 0 && isCursorUsagePaletteReady(rawOutput)) {
+        acceptUsage();
         return "continue";
       }
 
@@ -230,7 +251,7 @@ function runCursorUsageProbeLoop(
         }, CURSOR_USAGE_COMMAND_READY_DELAY_MS);
       }
 
-      return parsed.available ? { settleAfterMs: CURSOR_USAGE_OUTPUT_SETTLE_MS } : "continue";
+      return "continue";
     },
   }).then((rawOutput) => {
     clearSendTimers();
@@ -246,11 +267,22 @@ function runCursorUsageProbeLoop(
 
 export function probeCursorUsageLimits(
   input: CursorUsageProbeInput,
-  ptyAdapter: PtyAdapter.PtyAdapter["Service"],
   clock: ProbeClock = defaultProbeClock,
 ): Effect.Effect<CursorUsageProbeResult> {
   return Effect.gen(function* () {
-    const environment = {
+    const ptyAdapter = Option.getOrUndefined(yield* Effect.serviceOption(PtyAdapter.PtyAdapter));
+    if (!ptyAdapter) {
+      return {
+        usageLimits: makeUnavailableUsageLimits({
+          source: "cursorStatusProbe",
+          checkedAt: input.checkedAt,
+          reason: "Usage limits are unavailable in this runtime.",
+        }),
+        rawOutput: "",
+      };
+    }
+
+    const environment: NodeJS.ProcessEnv = {
       ...(input.environment ?? process.env),
       FORCE_COLOR: "1",
     };

@@ -18,7 +18,6 @@ import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
@@ -56,7 +55,6 @@ import {
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
 import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
-import { PtyAdapter } from "../../terminal/PtyAdapter.ts";
 
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -127,7 +125,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const { cwd } = yield* ServerConfig;
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
-      const ptyAdapter = Option.getOrUndefined(yield* Effect.serviceOption(PtyAdapter));
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
@@ -172,7 +169,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
         processEnv,
         cwd,
-        ptyAdapter ?? undefined,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

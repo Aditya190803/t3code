@@ -16,8 +16,15 @@ import {
  * Binary resolution is platform-dependent, so pin the platform rather than
  * letting assertions depend on whichever OS the suite happens to run on.
  */
-const probeGrokUsageLimitsOnLinux = (...args: Parameters<typeof probeGrokUsageLimits>) =>
-  probeGrokUsageLimits(...args).pipe(Effect.provideService(HostProcessPlatform, "linux"));
+const probeGrokUsageLimitsOnLinux = (
+  input: Parameters<typeof probeGrokUsageLimits>[0],
+  ptyAdapter: PtyAdapter.PtyAdapter["Service"],
+  clock?: ProbeClock,
+) =>
+  probeGrokUsageLimits(input, clock).pipe(
+    Effect.provideService(HostProcessPlatform, "linux"),
+    Effect.provideService(PtyAdapter.PtyAdapter, ptyAdapter),
+  );
 
 class MockPtyChild implements PtyAdapter.PtyProcess {
   public readonly writes: string[] = [];
