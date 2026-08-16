@@ -516,17 +516,37 @@ function providerQuotaLabel(provider: ServerProvider): string {
 }
 
 function shouldShowProviderQuota(provider: ServerProvider): boolean {
-  if (!provider.enabled || !provider.usageLimits) return false;
-  if (provider.usageLimits.available) {
-    return provider.usageLimits.windows.length > 0;
+  if (provider.driver === "opencode") return false;
+  return provider.enabled && provider.installed && provider.availability !== "unavailable";
+}
+
+function isGrokFreeTier(provider: ServerProvider): boolean {
+  if (provider.driver !== "grok") return false;
+  const tier = (provider.auth.label ?? provider.auth.type ?? "").trim().toLowerCase();
+  return tier === "free";
+}
+
+function providerQuotaNotice(provider: ServerProvider): string | null {
+  if (isGrokFreeTier(provider)) {
+    return "Usage is only shown for paid tiers";
   }
-  return Boolean(provider.usageLimits.reason);
+  if (!provider.usageLimits) return null;
+  if (provider.usageLimits.available) return null;
+  return provider.usageLimits.reason ?? "Usage data unavailable";
 }
 
 function formatQuotaResetDate(resetsAt: string | undefined): string | null {
   if (!resetsAt) return null;
   const date = new Date(resetsAt);
   if (Number.isNaN(date.getTime())) return null;
+  if (/T00:00:00(?:\.000)?Z$/.test(resetsAt)) {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(date);
+  }
   return new Intl.DateTimeFormat(undefined, {
     month: "numeric",
     day: "numeric",
@@ -534,6 +554,15 @@ function formatQuotaResetDate(resetsAt: string | undefined): string | null {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function sharedUsageResetAt(
+  windows: NonNullable<ServerProvider["usageLimits"]>["windows"],
+): string | undefined {
+  if (windows.length === 0) return undefined;
+  const first = windows[0]?.resetsAt;
+  if (!first) return undefined;
+  return windows.every((window) => window.resetsAt === first) ? first : undefined;
 }
 
 function quotaBarColor(percent: number): string {
@@ -552,8 +581,12 @@ function ProviderQuotaSection() {
       {groups.flatMap((group, groupIndex) =>
         group.providers.map((provider, providerIndex) => {
           const first = groupIndex === 0 && providerIndex === 0;
+          const notice = providerQuotaNotice(provider);
           const usageLimits = provider.usageLimits;
-          if (!usageLimits) return null;
+          const sharedReset = usageLimits?.available
+            ? sharedUsageResetAt(usageLimits.windows)
+            : undefined;
+          const sharedResetStr = formatQuotaResetDate(sharedReset);
           return (
             <View
               key={`${group.environmentId}:${provider.instanceId}`}
@@ -564,39 +597,50 @@ function ProviderQuotaSection() {
                   ? `${group.environmentLabel} · ${providerQuotaLabel(provider)}`
                   : providerQuotaLabel(provider)}
               </Text>
-              {!usageLimits.available ? (
+              {notice ? (
+                <Text className="text-sm text-foreground-muted">{notice}</Text>
+              ) : usageLimits?.available ? (
+                <>
+                  {usageLimits.windows.map((window) => {
+                    const roundedPercent = Math.round(
+                      Math.max(0, Math.min(100, window.usedPercent)),
+                    );
+                    const remainingPercent = 100 - roundedPercent;
+                    const resetDateStr = sharedReset ? null : formatQuotaResetDate(window.resetsAt);
+                    return (
+                      <View
+                        key={`${window.kind}:${window.label}:${window.resetsAt ?? "none"}`}
+                        className="gap-1.5"
+                      >
+                        <View className="flex-row items-baseline justify-between gap-3">
+                          <Text className="text-sm text-foreground">{window.label}</Text>
+                          <Text className="text-sm text-foreground-muted">
+                            {remainingPercent}% remaining
+                          </Text>
+                        </View>
+                        <View className="h-1.5 overflow-hidden rounded-full bg-subtle">
+                          <View
+                            className={`h-full rounded-full ${quotaBarColor(roundedPercent)}`}
+                            style={{ width: `${roundedPercent}%` }}
+                          />
+                        </View>
+                        {resetDateStr ? (
+                          <Text className="text-xs text-foreground-muted">
+                            Resets {resetDateStr}
+                          </Text>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                  {sharedResetStr ? (
+                    <Text className="text-xs text-foreground-muted">Resets {sharedResetStr}</Text>
+                  ) : null}
+                </>
+              ) : usageLimits ? (
                 <Text className="text-sm text-foreground-muted">
                   {usageLimits.reason ?? "Usage data unavailable"}
                 </Text>
-              ) : (
-                usageLimits.windows.map((window) => {
-                  const roundedPercent = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
-                  const remainingPercent = 100 - roundedPercent;
-                  const resetDateStr = formatQuotaResetDate(window.resetsAt);
-                  return (
-                    <View
-                      key={`${window.kind}:${window.label}:${window.resetsAt ?? "none"}`}
-                      className="gap-1.5"
-                    >
-                      <View className="flex-row items-baseline justify-between gap-3">
-                        <Text className="text-sm text-foreground">{window.label}</Text>
-                        <Text className="text-sm text-foreground-muted">
-                          {remainingPercent}% remaining
-                        </Text>
-                      </View>
-                      <View className="h-1.5 overflow-hidden rounded-full bg-subtle">
-                        <View
-                          className={`h-full rounded-full ${quotaBarColor(roundedPercent)}`}
-                          style={{ width: `${roundedPercent}%` }}
-                        />
-                      </View>
-                      {resetDateStr ? (
-                        <Text className="text-xs text-foreground-muted">Resets {resetDateStr}</Text>
-                      ) : null}
-                    </View>
-                  );
-                })
-              )}
+              ) : null}
             </View>
           );
         }),

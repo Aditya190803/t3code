@@ -10,7 +10,7 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { useAtomValue } from "@effect/atom-react";
 
 import { cn } from "../../lib/utils";
-import { formatDateTimeTimestamp } from "../../timestampFormat";
+import { formatDateTimeTimestamp, parseTimestampDate } from "../../timestampFormat";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
 import { environmentServerConfigsAtom } from "../../state/server";
@@ -28,8 +28,30 @@ export function formatUsageResetDate(
   timestampFormat: TimestampFormat = "locale",
 ): string | null {
   if (!resetsAt) return null;
+  const date = parseTimestampDate(resetsAt);
+  if (!date) return null;
+  // Cursor's panel is date-only ("Resets 16 Sept"). We store that as UTC
+  // midnight; including a clock would invent a local time like 5:30 AM.
+  if (/T00:00:00(?:\.000)?Z$/.test(resetsAt)) {
+    const formatted = new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(date);
+    return formatted.length > 0 ? formatted : null;
+  }
   const formatted = formatDateTimeTimestamp(resetsAt, timestampFormat);
   return formatted.length > 0 ? formatted : null;
+}
+
+export function sharedUsageResetAt(
+  windows: ServerProviderUsageLimits["windows"],
+): string | undefined {
+  if (windows.length === 0) return undefined;
+  const first = windows[0]?.resetsAt;
+  if (!first) return undefined;
+  return windows.every((window) => window.resetsAt === first) ? first : undefined;
 }
 
 export function getUsageWindowKey(window: ServerProviderUsageLimits["windows"][number]): string {
@@ -44,12 +66,26 @@ export function providerQuotaLabel(provider: ServerProvider): string {
   );
 }
 
+export const GROK_FREE_TIER_USAGE_MESSAGE = "Usage is only shown for paid tiers";
+
+export function isGrokFreeTier(provider: Pick<ServerProvider, "driver" | "auth">): boolean {
+  if (provider.driver !== "grok") return false;
+  const tier = (provider.auth.label ?? provider.auth.type ?? "").trim().toLowerCase();
+  return tier === "free";
+}
+
 export function shouldShowProviderQuota(provider: ServerProvider): boolean {
-  if (!provider.enabled || !provider.usageLimits) return false;
-  if (provider.usageLimits.available) {
-    return provider.usageLimits.windows.length > 0;
+  if (provider.driver === "opencode") return false;
+  return provider.enabled && provider.installed && provider.availability !== "unavailable";
+}
+
+export function providerQuotaNotice(provider: ServerProvider): string | null {
+  if (isGrokFreeTier(provider)) {
+    return GROK_FREE_TIER_USAGE_MESSAGE;
   }
-  return Boolean(provider.usageLimits.reason);
+  if (!provider.usageLimits) return null;
+  if (provider.usageLimits.available) return null;
+  return provider.usageLimits.reason ?? "Usage data unavailable";
 }
 
 export function ProviderUsageBars(props: {
@@ -72,6 +108,9 @@ export function ProviderUsageBars(props: {
 
   if (usageLimits.windows.length === 0) return null;
 
+  const sharedReset = sharedUsageResetAt(usageLimits.windows);
+  const sharedResetStr = formatUsageResetDate(sharedReset, timestampFormat);
+
   return (
     <div className={cn("grid gap-3", props.className)}>
       {usageLimits.windows.map((window) => {
@@ -83,7 +122,9 @@ export function ProviderUsageBars(props: {
         const roundedPercent = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
         const remainingPercent = 100 - roundedPercent;
         const windowKey = getUsageWindowKey(window);
-        const resetDateStr = formatUsageResetDate(window.resetsAt, timestampFormat);
+        const resetDateStr = sharedReset
+          ? null
+          : formatUsageResetDate(window.resetsAt, timestampFormat);
 
         return (
           <div key={windowKey} className="grid gap-1.5">
@@ -113,6 +154,9 @@ export function ProviderUsageBars(props: {
           </div>
         );
       })}
+      {sharedResetStr ? (
+        <div className="text-[11px] text-muted-foreground">Resets {sharedResetStr}</div>
+      ) : null}
     </div>
   );
 }
@@ -129,24 +173,31 @@ function QuotaEnvironmentGroup(props: {
         </h3>
       ) : null}
       <div className="grid gap-6 sm:grid-cols-2">
-        {props.providers.map((provider) => (
-          <div key={provider.instanceId} className="grid gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <ProviderInstanceIcon
-                driverKind={provider.driver}
-                displayName={providerQuotaLabel(provider)}
-                accentColor={provider.accentColor}
-                showBadge={Boolean(provider.accentColor)}
-                className="size-5"
-                iconClassName="size-4 text-foreground/80"
-              />
-              <span className="truncate text-sm font-medium text-foreground">
-                {providerQuotaLabel(provider)}
-              </span>
+        {props.providers.map((provider) => {
+          const notice = providerQuotaNotice(provider);
+          return (
+            <div key={provider.instanceId} className="grid gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <ProviderInstanceIcon
+                  driverKind={provider.driver}
+                  displayName={providerQuotaLabel(provider)}
+                  accentColor={provider.accentColor}
+                  showBadge={Boolean(provider.accentColor)}
+                  className="size-5"
+                  iconClassName="size-4 text-foreground/80"
+                />
+                <span className="truncate text-sm font-medium text-foreground">
+                  {providerQuotaLabel(provider)}
+                </span>
+              </div>
+              {notice ? (
+                <p className="text-xs text-muted-foreground">{notice}</p>
+              ) : (
+                <ProviderUsageBars usageLimits={provider.usageLimits} />
+              )}
             </div>
-            <ProviderUsageBars usageLimits={provider.usageLimits} />
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
