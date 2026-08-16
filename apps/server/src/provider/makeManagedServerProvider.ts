@@ -17,12 +17,13 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { applyRuntimeUsageLimits } from "./providerUsageLimits.ts";
+import { applyRuntimeUsageLimits, resolveUsageLimitsAfterRefresh } from "./providerUsageLimits.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
+  readonly usageEpoch: number;
 }
 
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
@@ -58,6 +59,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
     enrichmentGeneration: 0,
+    usageEpoch: 0,
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
@@ -132,7 +134,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           return [null, state] as const;
         }
         const nextSnapshot = { ...state.snapshot, usageLimits: nextUsageLimits };
-        return [nextSnapshot, { ...state, snapshot: nextSnapshot }] as const;
+        return [
+          nextSnapshot,
+          { ...state, snapshot: nextSnapshot, usageEpoch: state.usageEpoch + 1 },
+        ] as const;
       });
       if (snapshotToPublish === null) {
         return;
@@ -151,23 +156,35 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
     }
 
+    const usageEpochAtStart = (yield* Ref.get(snapshotStateRef)).usageEpoch;
     const nextSnapshot = yield* input.checkProvider;
-    const nextGeneration = yield* Ref.modify(snapshotStateRef, (state) => {
-      const generation = input.enrichSnapshot
-        ? state.enrichmentGeneration + 1
-        : state.enrichmentGeneration;
-      return [
-        generation,
-        {
-          snapshot: nextSnapshot,
+    const { snapshot: publishedSnapshot, generation } = yield* Ref.modify(
+      snapshotStateRef,
+      (state) => {
+        const generation = input.enrichSnapshot
+          ? state.enrichmentGeneration + 1
+          : state.enrichmentGeneration;
+        const usageLimits = resolveUsageLimitsAfterRefresh({
+          published: state.snapshot.usageLimits,
+          probed: nextSnapshot.usageLimits,
+          livePatched: state.usageEpoch !== usageEpochAtStart,
+        });
+        const snapshot =
+          usageLimits === nextSnapshot.usageLimits
+            ? nextSnapshot
+            : { ...nextSnapshot, usageLimits };
+        const nextState = {
+          snapshot,
           enrichmentGeneration: generation,
-        },
-      ] as const;
-    });
+          usageEpoch: state.usageEpoch,
+        };
+        return [{ snapshot, generation }, nextState] as const;
+      },
+    );
     yield* Ref.set(settingsRef, nextSettings);
-    yield* PubSub.publish(changesPubSub, nextSnapshot);
-    yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
-    return nextSnapshot;
+    yield* PubSub.publish(changesPubSub, publishedSnapshot);
+    yield* restartSnapshotEnrichment(nextSettings, publishedSnapshot, generation);
+    return publishedSnapshot;
   });
   const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
     refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));

@@ -45,6 +45,17 @@ describe("provider usage presentation", () => {
     expect(formatUsageResetDate(undefined)).toBeNull();
   });
 
+  it("formats a reset instant with the requested clock", () => {
+    const resetAt = new Date(2026, 7, 16, 15, 30).toISOString();
+    expect(formatUsageResetDate(resetAt, "24-hour")).toContain(
+      new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: false,
+      }).format(new Date(resetAt)),
+    );
+  });
+
   it("uses the label to distinguish otherwise identical OpenCode windows", () => {
     const openCodeGo: ServerProviderUsageWindow = {
       kind: "session",

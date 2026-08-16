@@ -4,6 +4,7 @@ import {
   applyRuntimeUsageLimits,
   clampPercent,
   makeUsageLimitsSnapshot,
+  resolveUsageLimitsAfterRefresh,
   windowKindFromDuration,
 } from "./providerUsageLimits.ts";
 
@@ -186,5 +187,74 @@ describe("applyRuntimeUsageLimits", () => {
 
     expect(next?.available).toBe(true);
     expect(next?.windows).toHaveLength(1);
+  });
+});
+
+describe("resolveUsageLimitsAfterRefresh", () => {
+  const probed: ServerProviderUsageLimits = {
+    source: "codexAppServer",
+    available: true,
+    checkedAt: "2026-08-09T10:00:00.000Z",
+    windows: [{ kind: "weekly", label: "Weekly", usedPercent: 20, windowDurationMins: 10_080 }],
+  };
+  const published: ServerProviderUsageLimits = {
+    source: "codexAppServer",
+    available: true,
+    checkedAt: "2026-08-09T10:00:05.000Z",
+    windows: [
+      {
+        kind: "weekly",
+        label: "Weekly",
+        usedPercent: 80,
+        windowDurationMins: 10_080,
+        resetsAt: "2026-08-16T00:00:00.000Z",
+      },
+    ],
+  };
+
+  it("keeps published bars when the probe comes back unavailable", () => {
+    expect(
+      resolveUsageLimitsAfterRefresh({
+        published,
+        probed: {
+          source: "codexAppServer",
+          available: false,
+          reason: "Could not read Codex usage",
+          checkedAt: "2026-08-09T10:00:10.000Z",
+          windows: [],
+        },
+        livePatched: false,
+      }),
+    ).toBe(published);
+  });
+
+  it("lets a successful probe replace bars when nothing live-patched during it", () => {
+    expect(
+      resolveUsageLimitsAfterRefresh({
+        published,
+        probed,
+        livePatched: false,
+      }),
+    ).toBe(probed);
+  });
+
+  it("folds live windows onto the probe when usage was patched during the wait", () => {
+    const next = resolveUsageLimitsAfterRefresh({
+      published,
+      probed: {
+        ...probed,
+        windows: [
+          { kind: "session", label: "Session", usedPercent: 10, windowDurationMins: 300 },
+          probed.windows[0]!,
+        ],
+      },
+      livePatched: true,
+    });
+
+    expect(next?.checkedAt).toBe(published.checkedAt);
+    expect(next?.windows).toEqual([
+      { kind: "session", label: "Session", usedPercent: 10, windowDurationMins: 300 },
+      published.windows[0],
+    ]);
   });
 });

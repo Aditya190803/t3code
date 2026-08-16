@@ -121,23 +121,26 @@ export function parseCodexRuntimeUsageWindows(
  * rate-limit telemetry or the payload carries nothing usable — callers keep
  * the previous snapshot in that case.
  */
+function isClaudeDriverKind(driverKind: ProviderDriverKind): boolean {
+  return driverKind === "claudeAgent" || driverKind === "claude";
+}
+
 export function parseRuntimeUsageLimitsUpdate(input: {
   readonly driverKind: ProviderDriverKind;
   readonly rateLimits: unknown;
   readonly checkedAt: string;
 }): RuntimeUsageLimitsUpdate | undefined {
-  const { windows, source } =
-    input.driverKind === "claude"
+  const { windows, source } = isClaudeDriverKind(input.driverKind)
+    ? {
+        windows: parseClaudeRuntimeUsageWindows(input.rateLimits),
+        source: "claudeStatusProbe" as const,
+      }
+    : input.driverKind === "codex"
       ? {
-          windows: parseClaudeRuntimeUsageWindows(input.rateLimits),
-          source: "claudeStatusProbe" as const,
+          windows: parseCodexRuntimeUsageWindows(input.rateLimits, input.checkedAt),
+          source: "codexAppServer" as const,
         }
-      : input.driverKind === "codex"
-        ? {
-            windows: parseCodexRuntimeUsageWindows(input.rateLimits, input.checkedAt),
-            source: "codexAppServer" as const,
-          }
-        : { windows: [], source: "codexAppServer" as const };
+      : { windows: [], source: "codexAppServer" as const };
 
   return windows.length > 0 ? { source, windows } : undefined;
 }

@@ -7,9 +7,27 @@ const CHECKED_AT = "2026-08-09T00:00:00.000Z";
 const RESETS_AT_SECONDS = 1786752000;
 const RESETS_AT_ISO = "2026-08-15T00:00:00.000Z";
 
-const claudeDriver = ProviderDriverKind.make("claude");
+const claudeDriver = ProviderDriverKind.make("claudeAgent");
+const legacyClaudeDriver = ProviderDriverKind.make("claude");
 const codexDriver = ProviderDriverKind.make("codex");
 const grokDriver = ProviderDriverKind.make("grok");
+
+const claudeFiveHourEvent = {
+  type: "rate_limit_event",
+  rate_limit_info: {
+    status: "allowed",
+    rateLimitType: "five_hour",
+    utilization: 42,
+    resetsAt: RESETS_AT_SECONDS,
+  },
+} as const;
+
+const claudeFiveHourWindows = {
+  source: "claudeStatusProbe",
+  windows: [
+    { label: "Session", usedPercent: 42, windowDurationMins: 300, resetsAt: RESETS_AT_ISO },
+  ],
+} as const;
 
 describe("parseRuntimeUsageLimitsUpdate", () => {
   it("maps a Claude five-hour rate limit event onto the session window", () => {
@@ -17,22 +35,19 @@ describe("parseRuntimeUsageLimitsUpdate", () => {
       parseRuntimeUsageLimitsUpdate({
         driverKind: claudeDriver,
         checkedAt: CHECKED_AT,
-        rateLimits: {
-          type: "rate_limit_event",
-          rate_limit_info: {
-            status: "allowed",
-            rateLimitType: "five_hour",
-            utilization: 42,
-            resetsAt: RESETS_AT_SECONDS,
-          },
-        },
+        rateLimits: claudeFiveHourEvent,
       }),
-    ).toEqual({
-      source: "claudeStatusProbe",
-      windows: [
-        { label: "Session", usedPercent: 42, windowDurationMins: 300, resetsAt: RESETS_AT_ISO },
-      ],
-    });
+    ).toEqual(claudeFiveHourWindows);
+  });
+
+  it("accepts the legacy claude driver kind as well as claudeAgent", () => {
+    expect(
+      parseRuntimeUsageLimitsUpdate({
+        driverKind: legacyClaudeDriver,
+        checkedAt: CHECKED_AT,
+        rateLimits: claudeFiveHourEvent,
+      }),
+    ).toEqual(claudeFiveHourWindows);
   });
 
   it("maps a Claude seven-day rate limit event onto the weekly window", () => {

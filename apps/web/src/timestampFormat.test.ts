@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  formatDateTimeTimestamp,
   formatDayAwareTimestamp,
   formatElapsedDurationLabel,
   formatExpiresInLabel,
@@ -133,6 +134,31 @@ describe("formatExpiresInLabel", () => {
   it("uses hours with minute and second remainder", () => {
     expect(formatExpiresInLabel("2026-04-07T14:02:03.000Z")).toBe("Expires in 2h 2m 3s");
     expect(formatExpiresInLabel("2026-04-07T18:00:00.000Z")).toBe("Expires in 6h");
+  });
+});
+
+describe("formatDateTimeTimestamp", () => {
+  const iso = (y: number, monthIndex: number, d: number, h: number, mi: number) =>
+    new Date(y, monthIndex, d, h, mi).toISOString();
+
+  it("returns empty for an invalid instant", () => {
+    expect(formatDateTimeTimestamp("not-a-date", "12-hour")).toBe("");
+  });
+
+  it("prefixes the locale date with the clock from timestampFormat", () => {
+    const resetAt = iso(2026, 7, 16, 15, 30);
+    const datePart = new Intl.DateTimeFormat(undefined, {
+      month: "numeric",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(resetAt));
+
+    expect(formatDateTimeTimestamp(resetAt, "12-hour")).toBe(
+      `${datePart} ${formatShortTimestamp(resetAt, "12-hour")}`,
+    );
+    expect(formatDateTimeTimestamp(resetAt, "24-hour")).toBe(
+      `${datePart} ${formatShortTimestamp(resetAt, "24-hour")}`,
+    );
   });
 });
 

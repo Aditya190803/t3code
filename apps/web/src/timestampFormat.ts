@@ -138,6 +138,18 @@ const numericDateWithYearFormatter = new Intl.DateTimeFormat(timestampLocale, {
 });
 
 /**
+ * Date plus time for a future wall-clock instant (e.g. a usage-limit reset).
+ * Calendar digits follow the host locale; the clock follows `timestampFormat`.
+ */
+export function formatDateTimeTimestamp(isoDate: string, timestampFormat: TimestampFormat): string {
+  const date = parseTimestampDate(isoDate);
+  if (!date) return "";
+  const datePart = numericDateWithYearFormatter.format(date);
+  const time = formatShortTimestamp(isoDate, timestampFormat);
+  return `${datePart} ${time}`;
+}
+
+/**
  * Chat timestamp that adds the date once the message is no longer from today:
  * today `12:34 PM`, yesterday `yesterday at 12:34 PM`, older `8/13 12:34 PM`
  * (locale digit order), with the year included once the calendar year differs.

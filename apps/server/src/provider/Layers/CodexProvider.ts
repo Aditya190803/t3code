@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -407,13 +408,16 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ],
     { concurrency: "unbounded" },
   );
-  // Rate limits are an optional enrichment of the snapshot. `Effect.catch` only
-  // recovers typed failures, so a defect thrown while decoding this response
-  // would take down the whole Codex provider probe. Catch the full cause and
-  // degrade to "no usage" instead.
+  // Rate limits are an optional enrichment of the snapshot. Recover typed
+  // failures and decode defects so they degrade to "no usage", but rethrow
+  // interrupts so a cancelled probe cannot finish as success.
   const rateLimitsResponse = yield* client
     .request("account/rateLimits/read", undefined)
-    .pipe(Effect.catchCause(() => Effect.void));
+    .pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void,
+      ),
+    );
 
   return {
     account: accountResponse,

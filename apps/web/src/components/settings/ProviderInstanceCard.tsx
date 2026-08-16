@@ -23,10 +23,12 @@ import {
   type ServerProviderModel,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import { cn } from "../../lib/utils";
-import { parseTimestampDate } from "../../timestampFormat";
+import { formatDateTimeTimestamp } from "../../timestampFormat";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { usePrimarySettings } from "../../hooks/useSettings";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -59,17 +61,13 @@ function usageBarColor(percent: number): string {
   return "bg-foreground";
 }
 
-export function formatUsageResetDate(resetsAt: string | undefined): string | null {
+export function formatUsageResetDate(
+  resetsAt: string | undefined,
+  timestampFormat: TimestampFormat = "locale",
+): string | null {
   if (!resetsAt) return null;
-  const resetDate = parseTimestampDate(resetsAt);
-  if (!resetDate) return null;
-  return resetDate.toLocaleString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const formatted = formatDateTimeTimestamp(resetsAt, timestampFormat);
+  return formatted.length > 0 ? formatted : null;
 }
 
 export function getUsageWindowKey(window: ServerProviderUsageLimits["windows"][number]): string {
@@ -80,6 +78,7 @@ function ProviderUsageBars(props: {
   readonly usageLimits: ServerProviderUsageLimits | undefined;
   readonly enabled: boolean;
 }) {
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   if (!props.enabled || !props.usageLimits) return null;
 
   const { usageLimits } = props;
@@ -105,7 +104,7 @@ function ProviderUsageBars(props: {
         const roundedPercent = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
         const remainingPercent = 100 - roundedPercent;
         const windowKey = getUsageWindowKey(window);
-        const resetDateStr = formatUsageResetDate(window.resetsAt);
+        const resetDateStr = formatUsageResetDate(window.resetsAt, timestampFormat);
 
         return (
           <div key={windowKey} className="grid gap-1.5">
@@ -122,7 +121,10 @@ function ProviderUsageBars(props: {
               aria-valuemax={100}
             >
               <div
-                className={cn("h-full rounded-full transition-all", color)}
+                className={cn(
+                  "h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none",
+                  color,
+                )}
                 style={{ width: `${roundedPercent}%` }}
               />
             </div>

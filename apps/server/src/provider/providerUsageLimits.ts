@@ -152,6 +152,36 @@ export function applyRuntimeUsageLimits(input: {
   };
 }
 
+/**
+ * Choose usage limits after a status probe finishes.
+ *
+ * Live `account.rate-limits.updated` patches land on the published snapshot
+ * while `checkProvider` is still running. The probe's `checkedAt` is stamped
+ * when it completes, so it always looks newer than those patches. If a live
+ * write happened during the wait, fold the published windows on top of the
+ * probe. A probe that comes back unavailable must not wipe bars a previous
+ * probe or live event already established.
+ */
+export function resolveUsageLimitsAfterRefresh(input: {
+  readonly published: ServerProviderUsageLimits | undefined;
+  readonly probed: ServerProviderUsageLimits | undefined;
+  readonly livePatched: boolean;
+}): ServerProviderUsageLimits | undefined {
+  const { published, probed, livePatched } = input;
+  if (published?.available === true && probed?.available !== true) {
+    return published;
+  }
+  if (livePatched && published?.available === true && probed?.available === true) {
+    return {
+      source: published.source,
+      available: true,
+      checkedAt: published.checkedAt,
+      windows: mergeUsageLimitWindows(probed.windows, published.windows),
+    };
+  }
+  return probed;
+}
+
 export function makeUsageLimitsSnapshot(input: {
   readonly source: ServerProviderUsageLimits["source"];
   readonly checkedAt: string;

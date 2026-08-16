@@ -453,4 +453,63 @@ describe("makeManagedServerProvider", () => {
       }),
     ).pipe(Effect.provide(AlwaysRunTestLayer)),
   );
+
+  it.effect("keeps live usage patches that land while a status probe is in flight", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const checkStarted = yield* Deferred.make<void>();
+        const releaseCheck = yield* Deferred.make<void>();
+        const probedUsageLimits = {
+          source: "codexAppServer" as const,
+          available: true as const,
+          checkedAt: "2026-08-09T10:00:10.000Z",
+          windows: [
+            {
+              kind: "weekly" as const,
+              label: "Weekly",
+              usedPercent: 20,
+              windowDurationMins: 10_080,
+            },
+          ],
+        };
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Effect.gen(function* () {
+            yield* Deferred.succeed(checkStarted, undefined).pipe(Effect.ignore);
+            yield* Deferred.await(releaseCheck);
+            return {
+              ...refreshedSnapshot,
+              usageLimits: probedUsageLimits,
+            };
+          }),
+          refreshInterval: "1 hour",
+        });
+
+        const updatesFiber = yield* Stream.take(provider.streamChanges, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.await(checkStarted);
+        yield* provider.applyUsageLimits({
+          source: "codexAppServer",
+          checkedAt: "2026-08-09T10:00:05.000Z",
+          windows: [{ label: "Weekly", usedPercent: 80, windowDurationMins: 10_080 }],
+        });
+        yield* Deferred.succeed(releaseCheck, undefined);
+
+        const updates = Array.from(yield* Fiber.join(updatesFiber));
+        const latest = yield* provider.getSnapshot;
+
+        assert.strictEqual(latest.usageLimits?.available, true);
+        assert.strictEqual(latest.usageLimits?.windows[0]?.usedPercent, 80);
+        assert.strictEqual(updates[0]?.usageLimits?.windows[0]?.usedPercent, 80);
+        assert.strictEqual(updates[1]?.usageLimits?.windows[0]?.usedPercent, 80);
+      }),
+    ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
 });
