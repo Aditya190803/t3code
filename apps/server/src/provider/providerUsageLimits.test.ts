@@ -223,7 +223,7 @@ describe("resolveUsageLimitsAfterRefresh", () => {
           checkedAt: "2026-08-09T10:00:10.000Z",
           windows: [],
         },
-        livePatched: false,
+        livePatchedWindows: [],
       }),
     ).toBe(published);
   });
@@ -240,19 +240,19 @@ describe("resolveUsageLimitsAfterRefresh", () => {
       resolveUsageLimitsAfterRefresh({
         published,
         probed: apiKeyUnavailable,
-        livePatched: false,
+        livePatchedWindows: [],
       }),
     ).toBe(apiKeyUnavailable);
     expect(
       resolveUsageLimitsAfterRefresh({
         published,
         probed: apiKeyUnavailable,
-        livePatched: true,
+        livePatchedWindows: [published.windows[0]!],
       }),
     ).toBe(apiKeyUnavailable);
   });
 
-  it("lets a settings-triggered unavailable probe replace previously available bars", () => {
+  it("keeps published bars when an unavailable refresh follows a settings change", () => {
     const probedUnavailable: ServerProviderUsageLimits = {
       source: "claudeStatusProbe",
       available: false,
@@ -264,10 +264,9 @@ describe("resolveUsageLimitsAfterRefresh", () => {
       resolveUsageLimitsAfterRefresh({
         published,
         probed: probedUnavailable,
-        livePatched: false,
-        settingsChanged: true,
+        livePatchedWindows: [],
       }),
-    ).toBe(probedUnavailable);
+    ).toBe(published);
   });
 
   it("lets a successful probe replace bars when nothing live-patched during it", () => {
@@ -275,7 +274,7 @@ describe("resolveUsageLimitsAfterRefresh", () => {
       resolveUsageLimitsAfterRefresh({
         published,
         probed,
-        livePatched: false,
+        livePatchedWindows: [],
       }),
     ).toBe(probed);
   });
@@ -290,13 +289,38 @@ describe("resolveUsageLimitsAfterRefresh", () => {
           probed.windows[0]!,
         ],
       },
-      livePatched: true,
+      livePatchedWindows: [published.windows[0]!],
     });
 
     expect(next?.checkedAt).toBe(published.checkedAt);
     expect(next?.windows).toEqual([
       { kind: "session", label: "Session", usedPercent: 10, windowDurationMins: 300 },
       published.windows[0],
+    ]);
+  });
+
+  it("keeps the probe's unpatched windows when a live patch overlaps the refresh", () => {
+    const liveSession = {
+      kind: "session" as const,
+      label: "Session",
+      usedPercent: 80,
+      windowDurationMins: 300,
+    };
+    const next = resolveUsageLimitsAfterRefresh({
+      published: { ...published, windows: [liveSession, published.windows[0]!] },
+      probed: {
+        ...probed,
+        windows: [
+          { kind: "session", label: "Session", usedPercent: 10, windowDurationMins: 300 },
+          { kind: "weekly", label: "Weekly", usedPercent: 30, windowDurationMins: 10_080 },
+        ],
+      },
+      livePatchedWindows: [liveSession],
+    });
+
+    expect(next?.windows).toEqual([
+      liveSession,
+      { kind: "weekly", label: "Weekly", usedPercent: 30, windowDurationMins: 10_080 },
     ]);
   });
 });

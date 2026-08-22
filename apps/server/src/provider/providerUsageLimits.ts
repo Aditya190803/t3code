@@ -168,7 +168,7 @@ function isAuthoritativeUsageUnavailable(limits: ServerProviderUsageLimits | und
  * Live `account.rate-limits.updated` patches land on the published snapshot
  * while `checkProvider` is still running. The probe's `checkedAt` is stamped
  * when it completes, so it always looks newer than those patches. If a live
- * write happened during the wait, fold the published windows on top of the
+ * write happened during the wait, fold only its patched windows on top of the
  * probe. A probe that comes back unavailable must not wipe bars a previous
  * probe or live event already established, unless the account itself cannot
  * have usage (API key).
@@ -176,27 +176,25 @@ function isAuthoritativeUsageUnavailable(limits: ServerProviderUsageLimits | und
 export function resolveUsageLimitsAfterRefresh(input: {
   readonly published: ServerProviderUsageLimits | undefined;
   readonly probed: ServerProviderUsageLimits | undefined;
-  readonly livePatched: boolean;
-  readonly settingsChanged?: boolean;
+  readonly livePatchedWindows: ReadonlyArray<ServerProviderUsageWindow>;
 }): ServerProviderUsageLimits | undefined {
-  const { published, probed, livePatched, settingsChanged } = input;
-  // A settings change can mean a different account. Keep last-good bars only
-  // for ordinary periodic refresh races, not when the user just reconfigured.
-  if (settingsChanged === true) {
-    return probed;
-  }
+  const { published, probed, livePatchedWindows } = input;
   if (isAuthoritativeUsageUnavailable(probed)) {
     return probed;
   }
   if (published?.available === true && probed?.available !== true) {
     return published;
   }
-  if (livePatched && published?.available === true && probed?.available === true) {
+  if (
+    livePatchedWindows.length > 0 &&
+    published?.available === true &&
+    probed?.available === true
+  ) {
     return {
       source: published.source,
       available: true,
       checkedAt: published.checkedAt,
-      windows: mergeUsageLimitWindows(probed.windows, published.windows),
+      windows: mergeUsageLimitWindows(probed.windows, livePatchedWindows),
     };
   }
   return probed;

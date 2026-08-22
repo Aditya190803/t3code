@@ -465,6 +465,12 @@ describe("makeManagedServerProvider", () => {
           checkedAt: "2026-08-09T10:00:10.000Z",
           windows: [
             {
+              kind: "session" as const,
+              label: "Session",
+              usedPercent: 10,
+              windowDurationMins: 300,
+            },
+            {
               kind: "weekly" as const,
               label: "Weekly",
               usedPercent: 20,
@@ -477,7 +483,29 @@ describe("makeManagedServerProvider", () => {
           getSettings: Effect.succeed({ enabled: true }),
           streamSettings: Stream.empty,
           haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
-          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          initialSnapshot: () =>
+            Effect.succeed({
+              ...initialSnapshot,
+              usageLimits: {
+                source: "codexAppServer",
+                available: true,
+                checkedAt: "2026-08-09T10:00:00.000Z",
+                windows: [
+                  {
+                    kind: "session",
+                    label: "Session",
+                    usedPercent: 5,
+                    windowDurationMins: 300,
+                  },
+                  {
+                    kind: "weekly",
+                    label: "Weekly",
+                    usedPercent: 5,
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            }),
           checkProvider: Effect.gen(function* () {
             yield* Deferred.succeed(checkStarted, undefined).pipe(Effect.ignore);
             yield* Deferred.await(releaseCheck);
@@ -506,9 +534,11 @@ describe("makeManagedServerProvider", () => {
         const latest = yield* provider.getSnapshot;
 
         assert.strictEqual(latest.usageLimits?.available, true);
-        assert.strictEqual(latest.usageLimits?.windows[0]?.usedPercent, 80);
-        assert.strictEqual(updates[0]?.usageLimits?.windows[0]?.usedPercent, 80);
-        assert.strictEqual(updates[1]?.usageLimits?.windows[0]?.usedPercent, 80);
+        assert.strictEqual(latest.usageLimits?.windows[0]?.usedPercent, 10);
+        assert.strictEqual(latest.usageLimits?.windows[1]?.usedPercent, 80);
+        assert.strictEqual(updates[0]?.usageLimits?.windows[1]?.usedPercent, 80);
+        assert.strictEqual(updates[1]?.usageLimits?.windows[0]?.usedPercent, 10);
+        assert.strictEqual(updates[1]?.usageLimits?.windows[1]?.usedPercent, 80);
       }),
     ).pipe(Effect.provide(AlwaysRunTestLayer)),
   );

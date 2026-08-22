@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, type ServerProviderUsageWindow } from "@t3tools/contracts";
 
+import { formatUtcDateTimestamp } from "../../timestampFormat";
 import {
   collectQuotaGroups,
   formatUsageResetDate,
@@ -31,12 +32,7 @@ describe("provider usage presentation", () => {
 
   it("formats a date-only UTC midnight reset without inventing a local clock", () => {
     expect(formatUsageResetDate("2026-09-16T00:00:00.000Z")).toBe(
-      new Intl.DateTimeFormat(undefined, {
-        month: "numeric",
-        day: "numeric",
-        year: "numeric",
-        timeZone: "UTC",
-      }).format(new Date("2026-09-16T00:00:00.000Z")),
+      formatUtcDateTimestamp("2026-09-16T00:00:00.000Z"),
     );
   });
 

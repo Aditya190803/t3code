@@ -136,6 +136,21 @@ const numericDateWithYearFormatter = new Intl.DateTimeFormat(timestampLocale, {
   day: "numeric",
   year: "numeric",
 });
+const utcDateWithYearFormatter = new Intl.DateTimeFormat(timestampLocale, {
+  month: "numeric",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/**
+ * Date-only UTC timestamp (e.g. a reset date whose source has no clock).
+ * Calendar digits follow the host locale without converting its UTC day.
+ */
+export function formatUtcDateTimestamp(isoDate: string): string {
+  const date = parseTimestampDate(isoDate);
+  return date ? utcDateWithYearFormatter.format(date) : "";
+}
 
 /**
  * Date plus time for a future wall-clock instant (e.g. a usage-limit reset).

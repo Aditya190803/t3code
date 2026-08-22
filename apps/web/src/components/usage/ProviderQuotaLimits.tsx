@@ -10,7 +10,11 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { useAtomValue } from "@effect/atom-react";
 
 import { cn } from "../../lib/utils";
-import { formatDateTimeTimestamp, parseTimestampDate } from "../../timestampFormat";
+import {
+  formatDateTimeTimestamp,
+  formatUtcDateTimestamp,
+  parseTimestampDate,
+} from "../../timestampFormat";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
 import { environmentServerConfigsAtom } from "../../state/server";
@@ -33,12 +37,7 @@ export function formatUsageResetDate(
   // Cursor's panel is date-only ("Resets 16 Sept"). We store that as UTC
   // midnight; including a clock would invent a local time like 5:30 AM.
   if (/T00:00:00(?:\.000)?Z$/.test(resetsAt)) {
-    const formatted = new Intl.DateTimeFormat(undefined, {
-      month: "numeric",
-      day: "numeric",
-      year: "numeric",
-      timeZone: "UTC",
-    }).format(date);
+    const formatted = formatUtcDateTimestamp(resetsAt);
     return formatted.length > 0 ? formatted : null;
   }
   const formatted = formatDateTimeTimestamp(resetsAt, timestampFormat);
@@ -183,8 +182,10 @@ function QuotaEnvironmentGroup(props: {
                   displayName={providerQuotaLabel(provider)}
                   accentColor={provider.accentColor}
                   showBadge={Boolean(provider.accentColor)}
+                  indicatorBackground="var(--background)"
                   className="size-5"
                   iconClassName="size-4 text-foreground/80"
+                  badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-[7px]"
                 />
                 <span className="truncate text-sm font-medium text-foreground">
                   {providerQuotaLabel(provider)}

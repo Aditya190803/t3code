@@ -212,10 +212,14 @@ describe("formatDayAwareTimestamp", () => {
     });
     vi.resetModules();
 
-    const { formatDayAwareTimestamp: formatWithHostLocale } = await import("./timestampFormat");
+    const {
+      formatDayAwareTimestamp: formatWithHostLocale,
+      formatUtcDateTimestamp: formatUtcDateWithHostLocale,
+    } = await import("./timestampFormat");
     const messageAt = iso(2026, 7, 12, 15, 44);
 
     expect(formatWithHostLocale(messageAt, "locale", now)).toBe("12/08 15:44");
+    expect(formatUtcDateWithHostLocale("2026-08-12T00:00:00.000Z")).toBe("12/08/2026");
 
     vi.unstubAllGlobals();
   });

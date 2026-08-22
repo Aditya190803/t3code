@@ -1,6 +1,7 @@
 import {
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
   type ServerProvider,
+  type ServerProviderUsageWindow,
   ServerSettingsError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
@@ -24,6 +25,7 @@ interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
   readonly usageEpoch: number;
+  readonly usageWindowEpochs: ReadonlyMap<ServerProviderUsageWindow["kind"], number>;
 }
 
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
@@ -60,6 +62,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     snapshot: initialSnapshot,
     enrichmentGeneration: 0,
     usageEpoch: 0,
+    usageWindowEpochs: new Map(),
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
@@ -143,9 +146,21 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           return [null, state] as const;
         }
         const nextSnapshot = { ...state.snapshot, usageLimits: nextUsageLimits };
+        const usageEpoch = state.usageEpoch + 1;
+        const previousWindows =
+          state.snapshot.usageLimits?.available === true
+            ? state.snapshot.usageLimits.windows
+            : ([] as const);
+        const usageWindowEpochs = new Map(state.usageWindowEpochs);
+        for (const nextWindow of nextUsageLimits.windows) {
+          const previousWindow = previousWindows.find((window) => window.kind === nextWindow.kind);
+          if (!Equal.equals(previousWindow, nextWindow)) {
+            usageWindowEpochs.set(nextWindow.kind, usageEpoch);
+          }
+        }
         return [
           nextSnapshot,
-          { ...state, snapshot: nextSnapshot, usageEpoch: state.usageEpoch + 1 },
+          { ...state, snapshot: nextSnapshot, usageEpoch, usageWindowEpochs },
         ] as const;
       });
       if (snapshotToPublish === null) {
@@ -166,7 +181,6 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     }
 
     const usageEpochAtStart = (yield* Ref.get(snapshotStateRef)).usageEpoch;
-    const settingsChanged = input.haveSettingsChanged(previousSettings, nextSettings);
     const nextSnapshot = yield* input.checkProvider;
     const { snapshot: publishedSnapshot, generation } = yield* Ref.modify(
       snapshotStateRef,
@@ -174,11 +188,16 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         const generation = input.enrichSnapshot
           ? state.enrichmentGeneration + 1
           : state.enrichmentGeneration;
+        const livePatchedWindows =
+          state.snapshot.usageLimits?.available === true
+            ? state.snapshot.usageLimits.windows.filter(
+                (window) => (state.usageWindowEpochs.get(window.kind) ?? 0) > usageEpochAtStart,
+              )
+            : [];
         const usageLimits = resolveUsageLimitsAfterRefresh({
           published: state.snapshot.usageLimits,
           probed: nextSnapshot.usageLimits,
-          livePatched: state.usageEpoch !== usageEpochAtStart,
-          settingsChanged,
+          livePatchedWindows,
         });
         const snapshot =
           usageLimits === nextSnapshot.usageLimits
@@ -188,6 +207,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           snapshot,
           enrichmentGeneration: generation,
           usageEpoch: state.usageEpoch,
+          usageWindowEpochs: state.usageWindowEpochs,
         };
         return [{ snapshot, generation }, nextState] as const;
       },
