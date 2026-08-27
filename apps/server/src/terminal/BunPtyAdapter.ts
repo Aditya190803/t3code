@@ -87,8 +87,16 @@ class BunPtyProcess implements PtyAdapter.PtyProcess {
 
   onExit(callback: (event: PtyAdapter.PtyExitEvent) => void): () => void {
     if (this.lastExitEvent) {
-      callback(this.lastExitEvent);
-      return () => {};
+      const event = this.lastExitEvent;
+      let unsubscribed = false;
+      // Replay after the current setup stack so Terminal Manager can assign
+      // `session.process` / `status: "running"` before enqueueProcessEvent.
+      queueMicrotask(() => {
+        if (!unsubscribed) callback(event);
+      });
+      return () => {
+        unsubscribed = true;
+      };
     }
     this.exitListeners.add(callback);
     return () => {

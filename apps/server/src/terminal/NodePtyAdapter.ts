@@ -1,3 +1,4 @@
+import { spawn as spawnOsProcess } from "node:child_process";
 import * as NodeModule from "node:module";
 
 import * as Effect from "effect/Effect";
@@ -107,13 +108,24 @@ class NodePtyProcess implements PtyAdapter.PtyProcess {
     // rejection, so killing a live PTY on Windows terminates this entire
     // process. The throw is asynchronous, so no try/catch around `kill()` can
     // intercept it — the only reliable avoidance is to not enter that code
-    // path. Signal the OS process directly instead; conpty resources are
+    // path. Kill the OS process tree directly instead; conpty resources are
     // reclaimed when the process goes away.
     if (this.platform === "win32") {
       try {
-        process.kill(this.process.pid);
+        // `process.kill` only signals the PTY host PID. Usage probes (and
+        // `.cmd` shims) launch the real CLI under `cmd.exe /c`, so descendants
+        // would otherwise survive timeouts as orphans. `/T` kills the tree.
+        const killer = spawnOsProcess("taskkill", ["/PID", String(this.process.pid), "/T", "/F"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        killer.unref();
       } catch {
-        // Already gone, or we lack permission — nothing useful to do.
+        try {
+          process.kill(this.process.pid);
+        } catch {
+          // Already gone, or we lack permission — nothing useful to do.
+        }
       }
       return;
     }
@@ -129,8 +141,16 @@ class NodePtyProcess implements PtyAdapter.PtyProcess {
 
   onExit(callback: (event: PtyAdapter.PtyExitEvent) => void): () => void {
     if (this.exitEvent) {
-      callback(this.exitEvent);
-      return () => {};
+      const exitEvent = this.exitEvent;
+      let unsubscribed = false;
+      // Replay after the current setup stack so Terminal Manager can assign
+      // `session.process` / `status: "running"` before enqueueProcessEvent.
+      queueMicrotask(() => {
+        if (!unsubscribed) callback(exitEvent);
+      });
+      return () => {
+        unsubscribed = true;
+      };
     }
     this.exitListeners.add(callback);
     return () => {
