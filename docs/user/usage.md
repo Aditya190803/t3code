@@ -1,8 +1,12 @@
 # Review usage
 
-The Usage page combines Codex and Claude Code activity from your connected environments. It reads
-the providers' local session history and shows API-equivalent token cost, processed tokens, cache
-savings, provider shares, and model breakdowns.
+The Usage page combines Codex, Claude Code, and Grok Build activity from your connected
+environments. It reads the providers' local session history and shows API-equivalent token cost,
+processed tokens, cache savings, provider shares, and model breakdowns. Subscription billing is
+separate from the raw token cost shown here.
+
+Grok Build totals come from persisted session updates. Interactive turns that never wrote a
+completed-turn record will not appear.
 
 **Provider limits** at the top of the page are the remaining subscription windows from each
 provider (session, weekly, included, and similar). Those bars are independent of the raw token
