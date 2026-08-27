@@ -119,6 +119,13 @@ class NodePtyProcess implements PtyAdapter.PtyProcess {
           stdio: "ignore",
           windowsHide: true,
         });
+        killer.once("error", () => {
+          try {
+            process.kill(this.process.pid);
+          } catch {
+            return;
+          }
+        });
         killer.unref();
       } catch {
         try {
