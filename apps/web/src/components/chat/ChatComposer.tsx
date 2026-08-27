@@ -125,6 +125,8 @@ import {
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "./composerProviderState";
+import { ComposerUsageMeter } from "./ComposerUsageMeter";
+import { resolveComposerUsageMeter } from "./ComposerUsageMeter.logic";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -438,6 +440,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
 
 const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   compact: boolean;
+  composerUsage: ReturnType<typeof resolveComposerUsageMeter>;
   activeContextWindow: ContextWindowSnapshot | null;
   activeThreadModelDisplayName: string | null;
   isPreparingWorktree: boolean;
@@ -467,6 +470,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
+      {props.composerUsage && !props.activeContextWindow ? (
+        <ComposerUsageMeter usage={props.composerUsage} />
+      ) : null}
       {props.activeContextWindow ? (
         <ContextWindowMeter
           usage={props.activeContextWindow}
@@ -474,6 +480,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
           onCompact={props.onCompactContext}
           compactDisabled={props.compactDisabled}
           compactDisabledReason={props.compactDisabledReason}
+          providerUsage={props.composerUsage}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -927,6 +934,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const noProviderAvailable = selectedProviderEntry === undefined;
   const resolvedCompactDisabledReason =
     compactDisabledReason ?? (noProviderAvailable ? "Compacting is unavailable right now" : null);
+  const composerUsage = useMemo(
+    () =>
+      resolveComposerUsageMeter({
+        enabled: settings.showProviderUsageInComposer,
+        provider: selectedProviderEntry?.snapshot,
+      }),
+    [selectedProviderEntry, settings.showProviderUsageInComposer],
+  );
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -3557,6 +3572,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   {showMobilePendingAnswerActions ? null : inlineStashBadge}
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
+                    composerUsage={composerUsage}
                     activeContextWindow={activeContextWindow}
                     activeThreadModelDisplayName={activeThreadModelDisplayName}
                     pendingAction={pendingPrimaryAction}

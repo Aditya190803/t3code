@@ -12,6 +12,10 @@ completed-turn record will not appear.
 provider (session, weekly, included, and similar). Those bars are independent of the raw token
 cost below. Subscription billing is also separate from that token cost.
 
+On web and desktop, **Settings → General → Show usage in chat** puts the current thread's provider
+limits in the context-window hover next to the chat box. The bars stay hidden until that setting is
+on, and they only show the provider selected for that thread.
+
 Use **Past 24h** for an hourly chart covering the exact rolling 24-hour period. The **7 days**,
 **30 days**, and **90 days** ranges use daily resolution. Cost and token toggles update both the
 headline and chart, and refreshing rescans every connected environment.

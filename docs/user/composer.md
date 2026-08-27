@@ -21,6 +21,13 @@ same `$name` skill token to your message. The original skill name remains search
 also reports that skill as a native slash command, T3 Code hides the duplicate native entry and keeps
 the `/skill:Skill Name` label.
 
+The composer can also show remaining session and weekly usage for the provider on the current thread.
+This stays off until you turn on **Show usage in chat** in **Settings → General**. A Codex thread
+shows Codex usage only; switching the thread to Claude Code switches the meter with it. When a
+context window ring is visible, those bars appear in that hover. If the ring is not available, a
+compact percent control appears next to send instead. Providers without a usable quota snapshot hide
+the meter instead of showing an error.
+
 On desktop, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux from a new thread to
 start it in the background. T3 Code opens another new thread and shows an **Open** action for the
 thread that started. The new thread keeps the selected workspace mode and base branch. If **New
