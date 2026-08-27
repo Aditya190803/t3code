@@ -938,9 +938,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () =>
       resolveComposerUsageMeter({
         enabled: settings.showProviderUsageInComposer,
+        hasStartedTurn: activeThread?.latestTurn != null || phase === "running",
         provider: selectedProviderEntry?.snapshot,
       }),
-    [selectedProviderEntry, settings.showProviderUsageInComposer],
+    [activeThread?.latestTurn, phase, selectedProviderEntry, settings.showProviderUsageInComposer],
   );
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is

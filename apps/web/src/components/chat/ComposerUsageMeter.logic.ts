@@ -18,15 +18,17 @@ export function headlineUsageUsedPercent(windows: ServerProviderUsageLimits["win
 }
 
 /**
- * Composer usage is opt-in and scoped to the thread's current provider.
- * Unavailable, unpaid, or empty snapshots stay hidden so the chat box
- * never renders an error state next to send.
+ * Chat-box usage is opt-in, scoped to the thread's current provider, and
+ * hidden until the thread has started a turn. Unavailable, unpaid, or empty
+ * snapshots stay hidden so the chat box never renders an error state next
+ * to send.
  */
 export function resolveComposerUsageMeter(input: {
   readonly enabled: boolean;
+  readonly hasStartedTurn: boolean;
   readonly provider: ServerProvider | null | undefined;
 }): ComposerUsageMeterModel | null {
-  if (!input.enabled) return null;
+  if (!input.enabled || !input.hasStartedTurn) return null;
   const provider = input.provider;
   if (!provider || !shouldShowProviderQuota(provider)) return null;
   if (providerQuotaNotice(provider) !== null) return null;

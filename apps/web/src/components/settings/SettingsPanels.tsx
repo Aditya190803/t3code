@@ -2115,7 +2115,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           {...searchableSetting("usage-in-chat")}
-          description="Show remaining session and weekly usage for the current provider next to the chat box."
+          description="Show remaining session and weekly usage for the current provider next to the chat box, after the first message in a thread."
           resetAction={
             settings.showProviderUsageInComposer !==
             DEFAULT_UNIFIED_SETTINGS.showProviderUsageInComposer ? (

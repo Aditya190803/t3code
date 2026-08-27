@@ -59,32 +59,50 @@ describe("resolveComposerUsageMeter", () => {
   });
 
   it("stays hidden until the setting is on", () => {
-    expect(resolveComposerUsageMeter({ enabled: false, provider: codex })).toBeNull();
+    expect(
+      resolveComposerUsageMeter({ enabled: false, hasStartedTurn: true, provider: codex }),
+    ).toBeNull();
+  });
+
+  it("stays hidden until the thread has started a turn", () => {
+    expect(
+      resolveComposerUsageMeter({ enabled: true, hasStartedTurn: false, provider: codex }),
+    ).toBeNull();
   });
 
   it("shows only the current provider's windows", () => {
-    expect(resolveComposerUsageMeter({ enabled: true, provider: codex })).toEqual({
+    expect(
+      resolveComposerUsageMeter({ enabled: true, hasStartedTurn: true, provider: codex }),
+    ).toEqual({
       providerLabel: "Codex",
       usageLimits: codex.usageLimits,
       usedPercent: 55,
     });
-    expect(resolveComposerUsageMeter({ enabled: true, provider: claude })?.providerLabel).toBe(
-      "Claude Code",
-    );
-    expect(resolveComposerUsageMeter({ enabled: true, provider: claude })?.usedPercent).toBe(90);
+    expect(
+      resolveComposerUsageMeter({ enabled: true, hasStartedTurn: true, provider: claude })
+        ?.providerLabel,
+    ).toBe("Claude Code");
+    expect(
+      resolveComposerUsageMeter({ enabled: true, hasStartedTurn: true, provider: claude })
+        ?.usedPercent,
+    ).toBe(90);
   });
 
   it("hides when the current provider has no usable quota snapshot", () => {
-    expect(resolveComposerUsageMeter({ enabled: true, provider: undefined })).toBeNull();
+    expect(
+      resolveComposerUsageMeter({ enabled: true, hasStartedTurn: true, provider: undefined }),
+    ).toBeNull();
     expect(
       resolveComposerUsageMeter({
         enabled: true,
+        hasStartedTurn: true,
         provider: provider({ driver: ProviderDriverKind.make("codex"), usageLimits: undefined }),
       }),
     ).toBeNull();
     expect(
       resolveComposerUsageMeter({
         enabled: true,
+        hasStartedTurn: true,
         provider: provider({
           driver: ProviderDriverKind.make("opencode"),
           usageLimits: usageLimits([{ kind: "session", label: "OpenCode Go", usedPercent: 10 }]),
@@ -94,6 +112,7 @@ describe("resolveComposerUsageMeter", () => {
     expect(
       resolveComposerUsageMeter({
         enabled: true,
+        hasStartedTurn: true,
         provider: provider({
           driver: ProviderDriverKind.make("grok"),
           auth: { status: "authenticated", label: "Free", type: "Free" },
