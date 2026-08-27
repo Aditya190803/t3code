@@ -121,7 +121,7 @@ export const ServerProviderUsageLimits = Schema.Struct({
   ]),
   available: Schema.Boolean,
   reason: Schema.optional(TrimmedNonEmptyString),
-  windows: Schema.Array(ServerProviderUsageWindow),
+  windows: ForwardCompatibleArray(ServerProviderUsageWindow),
   checkedAt: IsoDateTime,
 });
 export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;

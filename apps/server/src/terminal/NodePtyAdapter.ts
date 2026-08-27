@@ -70,10 +70,22 @@ const ensureNodePtySpawnHelperExecutable = Effect.fn(function* () {
 class NodePtyProcess implements PtyAdapter.PtyProcess {
   private readonly process: import("node-pty").IPty;
   private readonly platform: NodeJS.Platform;
+  private readonly exitListeners = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
+  private exitEvent: PtyAdapter.PtyExitEvent | undefined;
 
   constructor(process: import("node-pty").IPty, platform: NodeJS.Platform) {
     this.process = process;
     this.platform = platform;
+    this.process.onExit((event) => {
+      if (this.exitEvent) return;
+      this.exitEvent = {
+        exitCode: event.exitCode,
+        signal: event.signal ?? null,
+      };
+      for (const listener of this.exitListeners) {
+        listener(this.exitEvent);
+      }
+    });
   }
 
   get pid(): number {
@@ -116,14 +128,13 @@ class NodePtyProcess implements PtyAdapter.PtyProcess {
   }
 
   onExit(callback: (event: PtyAdapter.PtyExitEvent) => void): () => void {
-    const disposable = this.process.onExit((event) => {
-      callback({
-        exitCode: event.exitCode,
-        signal: event.signal ?? null,
-      });
-    });
+    if (this.exitEvent) {
+      callback(this.exitEvent);
+      return () => {};
+    }
+    this.exitListeners.add(callback);
     return () => {
-      disposable.dispose();
+      this.exitListeners.delete(callback);
     };
   }
 }

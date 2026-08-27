@@ -530,7 +530,7 @@ function providerQuotaNotice(provider: ServerProvider): string | null {
   if (isGrokFreeTier(provider)) {
     return "Usage is only shown for paid tiers";
   }
-  if (!provider.usageLimits) return null;
+  if (!provider.usageLimits) return "Usage data unavailable";
   if (provider.usageLimits.available) return null;
   return provider.usageLimits.reason ?? "Usage data unavailable";
 }

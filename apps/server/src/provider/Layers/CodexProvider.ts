@@ -38,6 +38,7 @@ import {
 import { expandHomePath } from "../../pathExpansion.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
+const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 
@@ -403,19 +404,21 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     { concurrency: "unbounded" },
   );
   // Rate limits are an optional enrichment of the snapshot. Recover typed
-  // failures and decode defects so they degrade to "no usage", but rethrow
-  // interrupts so a cancelled probe cannot finish as success.
-  const rateLimitsResponse = yield* client
-    .request("account/rateLimits/read", undefined)
-    .pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void,
-      ),
-    );
+  // failures, decode defects, and per-request timeouts so they degrade to
+  // "no usage". A hung `account/rateLimits/read` must not consume the outer
+  // 10s probe budget and discard account/models/skills already fetched.
+  // Rethrow interrupts so a cancelled probe cannot finish as success.
+  const rateLimitsResponse = yield* client.request("account/rateLimits/read", undefined).pipe(
+    Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(Option.none()),
+    ),
+  );
 
+  const rateLimits = Option.getOrUndefined(rateLimitsResponse)?.rateLimits;
   return {
     account: accountResponse,
-    ...(rateLimitsResponse?.rateLimits ? { rateLimits: rateLimitsResponse.rateLimits } : {}),
+    ...(rateLimits ? { rateLimits } : {}),
     version,
     models: applyPreferredCodexDefaultModel(
       appendCustomCodexModels(models, input.customModels ?? []),

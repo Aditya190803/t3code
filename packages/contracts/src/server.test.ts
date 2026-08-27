@@ -261,34 +261,34 @@ describe("ServerProvider", () => {
     expect(fromTui.usageLimits?.windows[0]?.usedPercent).toBe(32);
   });
 
-  it("rejects invalid usage percentages", () => {
-    expect(() =>
-      decodeServerProvider({
-        instanceId: "codex",
-        driver: "codex",
-        enabled: true,
-        installed: true,
-        version: "1.0.0",
-        status: "ready",
-        auth: {
-          status: "authenticated",
-        },
+  it("drops usage windows with invalid percentages instead of failing the provider", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+      },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+      usageLimits: {
+        source: "codexAppServer",
+        available: true,
         checkedAt: "2026-04-10T00:00:00.000Z",
-        models: [],
-        usageLimits: {
-          source: "codexAppServer",
-          available: true,
-          checkedAt: "2026-04-10T00:00:00.000Z",
-          windows: [
-            {
-              kind: "session",
-              label: "Session",
-              usedPercent: 101,
-            },
-          ],
-        },
-      }),
-    ).toThrow();
+        windows: [
+          {
+            kind: "session",
+            label: "Session",
+            usedPercent: 101,
+          },
+        ],
+      },
+    });
+
+    expect(parsed.usageLimits?.windows).toEqual([]);
   });
 
   it("decodes optional legacy model metadata", () => {
@@ -484,34 +484,34 @@ describe("ServerProvider", () => {
     expect(fromTui.usageLimits?.windows[0]?.usedPercent).toBe(32);
   });
 
-  it("rejects invalid usage percentages", () => {
-    expect(() =>
-      decodeServerProvider({
-        instanceId: "codex",
-        driver: "codex",
-        enabled: true,
-        installed: true,
-        version: "1.0.0",
-        status: "ready",
-        auth: {
-          status: "authenticated",
-        },
+  it("drops usage windows with invalid percentages instead of failing the provider", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+      },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+      usageLimits: {
+        source: "codexAppServer",
+        available: true,
         checkedAt: "2026-04-10T00:00:00.000Z",
-        models: [],
-        usageLimits: {
-          source: "codexAppServer",
-          available: true,
-          checkedAt: "2026-04-10T00:00:00.000Z",
-          windows: [
-            {
-              kind: "session",
-              label: "Session",
-              usedPercent: 101,
-            },
-          ],
-        },
-      }),
-    ).toThrow();
+        windows: [
+          {
+            kind: "session",
+            label: "Session",
+            usedPercent: 101,
+          },
+        ],
+      },
+    });
+
+    expect(parsed.usageLimits?.windows).toEqual([]);
   });
 });
 
@@ -542,6 +542,28 @@ describe("server config forward compatibility", () => {
   // `providers` sits inside `ServerConfig`, failing the whole config decode —
   // an older client would drop its connection over one provider it can't
   // render. Dropping just that element keeps every other provider working.
+  it("drops unknown usage window kinds instead of failing the provider", () => {
+    const parsed = decodeServerProviders([
+      {
+        ...baseProviderSnapshot,
+        usageLimits: {
+          source: "claudeStatusProbe",
+          available: true,
+          checkedAt: "2026-04-10T00:00:00.000Z",
+          windows: [
+            { kind: "session", label: "Session", usedPercent: 10 },
+            { kind: "monthly", label: "Monthly", usedPercent: 20 },
+          ],
+        },
+      },
+    ]);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.usageLimits?.windows).toEqual([
+      { kind: "session", label: "Session", usedPercent: 10 },
+    ]);
+  });
+
   it("drops providers this build cannot decode instead of failing the whole array", () => {
     const decodedBase = decodeServerProvider(baseProviderSnapshot);
 

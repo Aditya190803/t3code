@@ -82,7 +82,7 @@ export function providerQuotaNotice(provider: ServerProvider): string | null {
   if (isGrokFreeTier(provider)) {
     return GROK_FREE_TIER_USAGE_MESSAGE;
   }
-  if (!provider.usageLimits) return null;
+  if (!provider.usageLimits) return "Usage data unavailable";
   if (provider.usageLimits.available) return null;
   return provider.usageLimits.reason ?? "Usage data unavailable";
 }

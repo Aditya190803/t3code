@@ -107,11 +107,13 @@ function runGrokUsageProbeLoop(
   child: PtyAdapter.PtyProcess,
   input: GrokUsageProbeInput,
   clock: ProbeClock,
+  signal: AbortSignal,
 ): Promise<GrokUsageProbeResult> {
   return collectPtyProbeOutput({
     child,
     clock,
     timeoutMs: GROK_USAGE_PROBE_TIMEOUT_MS,
+    signal,
     onStart: () => child.write("/usage\r"),
     resend: {
       send: () => child.write("/usage\r"),
@@ -180,6 +182,6 @@ export function probeGrokUsageLimits(
       };
     }
 
-    return yield* Effect.promise(() => runGrokUsageProbeLoop(child, input, clock));
+    return yield* Effect.promise((signal) => runGrokUsageProbeLoop(child, input, clock, signal));
   });
 }

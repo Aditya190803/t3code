@@ -252,6 +252,23 @@ describe("resolveUsageLimitsAfterRefresh", () => {
     ).toBe(apiKeyUnavailable);
   });
 
+  it("lets a Bedrock unavailable probe replace previously available bars", () => {
+    const bedrockUnavailable: ServerProviderUsageLimits = {
+      source: "claudeStatusProbe",
+      available: false,
+      reason: "Usage limits unavailable for Amazon Bedrock accounts.",
+      checkedAt: "2026-08-09T10:00:10.000Z",
+      windows: [],
+    };
+    expect(
+      resolveUsageLimitsAfterRefresh({
+        published,
+        probed: bedrockUnavailable,
+        livePatchedWindows: [],
+      }),
+    ).toBe(bedrockUnavailable);
+  });
+
   it("keeps published bars when an unavailable refresh follows a settings change", () => {
     const probedUnavailable: ServerProviderUsageLimits = {
       source: "claudeStatusProbe",

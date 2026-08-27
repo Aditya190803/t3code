@@ -56,6 +56,7 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+const GROK_AUTH_PROBE_TIMEOUT_MS = 3_000;
 
 const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -257,10 +258,15 @@ const discoverGrokProviderViaAcp = (
     const models = buildGrokDiscoveredModelsFromSessionModelState(
       started.sessionSetupResult.models,
     );
-    const auth = yield* probeGrokAuthViaAcp({
-      runtime: acp,
-      sessionId: started.sessionId,
-    });
+    // Auth is best-effort after models are already on the session. A hung
+    // `auth/check_subscription` must not burn the outer ACP discovery budget
+    // and discard the catalog as "startup timed out".
+    const auth = Option.getOrUndefined(
+      yield* probeGrokAuthViaAcp({
+        runtime: acp,
+        sessionId: started.sessionId,
+      }).pipe(Effect.timeoutOption(GROK_AUTH_PROBE_TIMEOUT_MS)),
+    );
     return {
       models,
       ...(auth ? { auth } : {}),
@@ -457,11 +463,13 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       enabled: grokSettings.enabled,
       checkedAt,
       models,
+      skills,
       probe: {
         installed: true,
         version,
         status: "warning",
         auth,
+        ...(usageLimits ? { usageLimits } : {}),
         message: grokUnauthenticatedMessage(),
       },
     });

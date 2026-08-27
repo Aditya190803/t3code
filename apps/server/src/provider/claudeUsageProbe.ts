@@ -318,11 +318,13 @@ function runProbeLoop(
   child: PtyAdapter.PtyProcess,
   input: ClaudeUsageProbeInput,
   clock: ProbeClock,
+  signal: AbortSignal,
 ): Promise<ClaudeUsageProbeResult> {
   return collectPtyProbeOutput({
     child,
     clock,
     timeoutMs: CLAUDE_USAGE_PROBE_TIMEOUT_MS,
+    signal,
   }).then((rawOutput) => {
     return {
       usageLimits: parseClaudeUsageLimitsOutput({
@@ -385,6 +387,6 @@ export function probeClaudeUsageLimits(
       };
     }
 
-    return yield* Effect.promise(() => runProbeLoop(child, input, clock));
+    return yield* Effect.promise((signal) => runProbeLoop(child, input, clock, signal));
   });
 }

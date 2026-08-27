@@ -145,6 +145,15 @@ describe("providerQuotaNotice", () => {
     ).toBe(GROK_FREE_TIER_USAGE_MESSAGE);
   });
 
+  it("explains providers that have not reported usage yet", () => {
+    expect(
+      providerQuotaNotice({
+        driver: "cursor",
+        auth: { status: "unauthenticated" },
+      } as never),
+    ).toBe("Usage data unavailable");
+  });
+
   it("keeps Cursor probe failures as the notice", () => {
     expect(
       providerQuotaNotice({

@@ -92,6 +92,11 @@ export function collectPtyProbeOutput(input: {
   readonly timeoutMs: number;
   readonly onStart?: () => void;
   /**
+   * When the surrounding Effect is interrupted, abort the probe immediately
+   * instead of waiting out `timeoutMs` with an orphaned child process.
+   */
+  readonly signal?: AbortSignal;
+  /**
    * Re-issues the probe command on a timer until the probe settles.
    *
    * Interactive CLIs routinely drop input written before they finish painting
@@ -118,6 +123,7 @@ export function collectPtyProbeOutput(input: {
     let resendAttempts = 0;
     let offData: () => void = () => {};
     let offExit: () => void = () => {};
+    let offAbort: () => void = () => {};
 
     const clearSettleTimer = () => {
       if (settleTimer) {
@@ -157,6 +163,7 @@ export function collectPtyProbeOutput(input: {
       }
       clearSettleTimer();
       clearResendTimer();
+      offAbort();
       offData();
       offExit();
       // A probe whose binary is missing exits the instant it spawns, so this
@@ -168,6 +175,13 @@ export function collectPtyProbeOutput(input: {
       resolve(rawOutput);
     };
 
+    // Subscribe to exit before data/start so an already-exited child (the
+    // adapter replays the last exit event) finishes immediately instead of
+    // waiting out the probe timeout.
+    offExit = input.child.onExit(() => {
+      exited = true;
+      finish();
+    });
     offData = input.child.onData((data) => {
       if (settled) return;
       rawOutput += data;
@@ -181,11 +195,21 @@ export function collectPtyProbeOutput(input: {
         settleTimer = input.clock.setTimeout(finish, decision.settleAfterMs);
       }
     });
-    offExit = input.child.onExit(() => {
-      exited = true;
-      finish();
-    });
     timeout = input.clock.setTimeout(finish, input.timeoutMs);
+
+    if (input.signal) {
+      const onAbort = () => finish();
+      if (input.signal.aborted) {
+        finish();
+        return;
+      }
+      input.signal.addEventListener("abort", onAbort, { once: true });
+      offAbort = () => input.signal?.removeEventListener("abort", onAbort);
+    }
+
+    if (settled) {
+      return;
+    }
 
     try {
       input.onStart?.();

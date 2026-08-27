@@ -117,6 +117,7 @@ export function parseCursorUsageLimitsOutput(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const cleaned = stripAnsi(input.output);
+  const hasUsagePanel = /(?:^|\n)\s*Usage\s*[•·]/i.test(cleaned);
   const rows = parseCursorUsageRows(cleaned);
   // Ink right-aligns the reset with CUF (`ESC [ n C`), so after stripping
   // ANSI the header is often `Usage • ProResets 16 Sept` with no word break.
@@ -126,7 +127,7 @@ export function parseCursorUsageLimitsOutput(input: {
   const resetText = [resetMatch?.[1] ?? resetMatch?.[2], resetMatch?.[3]].filter(Boolean).join(" ");
   const resetsAt = resetText ? parseCursorResetsAtIso(input.checkedAt, resetText) : undefined;
 
-  if (rows.length > 0) {
+  if (hasUsagePanel && rows.length > 0) {
     return makeUsageLimitsSnapshot({
       source: "cursorStatusProbe",
       checkedAt: input.checkedAt,
@@ -173,6 +174,7 @@ function runCursorUsageProbeLoop(
   child: PtyAdapter.PtyProcess,
   input: CursorUsageProbeInput,
   clock: ProbeClock,
+  signal: AbortSignal,
 ): Promise<CursorUsageProbeResult> {
   let usageAttempts = 0;
   let acceptedUsage = false;
@@ -224,6 +226,7 @@ function runCursorUsageProbeLoop(
     child,
     clock,
     timeoutMs: CURSOR_USAGE_PROBE_TIMEOUT_MS,
+    signal,
     decideAfterOutput: (rawOutput) => {
       const parsed = parseCursorUsageLimitsOutput({
         output: rawOutput,
@@ -314,6 +317,6 @@ export function probeCursorUsageLimits(
       };
     }
 
-    return yield* Effect.promise(() => runCursorUsageProbeLoop(child, input, clock));
+    return yield* Effect.promise((signal) => runCursorUsageProbeLoop(child, input, clock, signal));
   });
 }

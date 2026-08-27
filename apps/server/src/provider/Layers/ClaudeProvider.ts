@@ -944,13 +944,19 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt,
           reason: "Usage limits unavailable for Claude API key accounts.",
         })
-      : yield* probeClaudeUsageLimits({
-          binaryPath: claudeSettings.binaryPath,
-          launchArgs: claudeSettings.launchArgs,
-          cwd,
-          checkedAt,
-          environment: yield* makeClaudeEnvironment(claudeSettings, environment),
-        }).pipe(Effect.map((result) => result.usageLimits));
+      : authMetadata?.type === "bedrock"
+        ? makeUnavailableUsageLimits({
+            source: "claudeStatusProbe",
+            checkedAt,
+            reason: "Usage limits unavailable for Amazon Bedrock accounts.",
+          })
+        : yield* probeClaudeUsageLimits({
+            binaryPath: claudeSettings.binaryPath,
+            launchArgs: claudeSettings.launchArgs,
+            cwd,
+            checkedAt,
+            environment: yield* makeClaudeEnvironment(claudeSettings, environment),
+          }).pipe(Effect.map((result) => result.usageLimits));
 
   if (!capabilities) {
     return buildServerProvider({

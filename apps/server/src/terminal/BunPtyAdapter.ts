@@ -36,6 +36,7 @@ class BunPtyProcess implements PtyAdapter.PtyProcess {
   private readonly decoder = new TextDecoder();
   private readonly process: Bun.Subprocess;
   private didExit = false;
+  private lastExitEvent: PtyAdapter.PtyExitEvent | undefined;
 
   constructor(process: Bun.Subprocess) {
     this.process = process;
@@ -85,6 +86,10 @@ class BunPtyProcess implements PtyAdapter.PtyProcess {
   }
 
   onExit(callback: (event: PtyAdapter.PtyExitEvent) => void): () => void {
+    if (this.lastExitEvent) {
+      callback(this.lastExitEvent);
+      return () => {};
+    }
     this.exitListeners.add(callback);
     return () => {
       this.exitListeners.delete(callback);
@@ -103,6 +108,7 @@ class BunPtyProcess implements PtyAdapter.PtyProcess {
   private emitExit(event: PtyAdapter.PtyExitEvent): void {
     if (this.didExit) return;
     this.didExit = true;
+    this.lastExitEvent = event;
 
     const remainder = this.decoder.decode();
     if (remainder.length > 0) {

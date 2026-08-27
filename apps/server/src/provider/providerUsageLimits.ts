@@ -153,13 +153,16 @@ export function applyRuntimeUsageLimits(input: {
 }
 
 /**
- * API-key accounts cannot report subscription windows. That unavailable
- * snapshot must replace previously available bars (a user who switched off a
- * subscription), unlike a timed-out `/usage` probe which should keep the last
- * good snapshot.
+ * API-key and Bedrock accounts cannot report subscription windows. That
+ * unavailable snapshot must replace previously available bars (a user who
+ * switched off a subscription), unlike a timed-out `/usage` probe which
+ * should keep the last good snapshot.
  */
 function isAuthoritativeUsageUnavailable(limits: ServerProviderUsageLimits | undefined): boolean {
-  return limits?.available === false && /\bAPI key\b/i.test(limits.reason ?? "");
+  return (
+    limits?.available === false &&
+    (/\bAPI key\b/i.test(limits.reason ?? "") || /\bBedrock\b/i.test(limits.reason ?? ""))
+  );
 }
 
 /**

@@ -120,6 +120,15 @@ const SAMPLE_OUTPUT = `
 `;
 
 describe("cursorUsageProbe", () => {
+  it("ignores Auto/API percents that are not from the /usage panel", () => {
+    const parsed = parseCursorUsageLimitsOutput({
+      checkedAt: "2026-07-25T12:00:00.000Z",
+      output: "Auto  10% used\nAPI  13% used\n",
+    });
+
+    expect(parsed.available).toBe(false);
+  });
+
   it("parses Auto and API percents plus the reset date", () => {
     const parsed = parseCursorUsageLimitsOutput({
       checkedAt: "2026-07-25T12:00:00.000Z",
@@ -423,7 +432,7 @@ describe("cursorUsageProbe", () => {
         { startImmediately: true },
       );
 
-      child.emitData("Auto  10% used\nAPI  13% used\n");
+      child.emitData("Usage • Pro\nAuto  10% used\nAPI  13% used\n");
 
       const result = yield* Fiber.join(resultFiber);
       expect(result.usageLimits).toMatchObject({ available: true });
